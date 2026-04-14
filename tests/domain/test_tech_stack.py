@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.domain.value_objects.tech_stack import TechStack
+from src.shared.kernel.tech_stack import TechStack
 
 
 def test_normalization() -> None:

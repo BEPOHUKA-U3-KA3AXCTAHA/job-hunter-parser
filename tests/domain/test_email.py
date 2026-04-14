@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.domain.value_objects.email import Email
+from src.shared.kernel.email import Email
 
 
 def test_valid_email() -> None:

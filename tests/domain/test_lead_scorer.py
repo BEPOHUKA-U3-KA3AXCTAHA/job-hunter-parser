@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
-from src.domain.entities.company import Company
-from src.domain.entities.decision_maker import DecisionMaker, DecisionMakerRole
-from src.domain.services.lead_scorer import LeadScorer
-from src.domain.value_objects.tech_stack import TechStack
+from src.companies.domain.company import Company
+from src.leads.domain.lead_scorer import LeadScorer
+from src.people.domain.decision_maker import DecisionMaker, DecisionMakerRole
+from src.shared.kernel.email import Email
+from src.shared.kernel.tech_stack import TechStack
 
 
 def test_cto_at_hiring_python_rust_startup_scores_high() -> None:
@@ -21,12 +20,8 @@ def test_cto_at_hiring_python_rust_startup_scores_high() -> None:
         full_name="Alex Smith",
         role=DecisionMakerRole.CTO,
         company_id=company.id,
-        linkedin_url=None,
-        email=None,
+        email=Email("alex@blockflow.ai"),
     )
-    # add contact to boost score
-    from src.domain.value_objects.email import Email
-    dm.email = Email("alex@blockflow.ai")
 
     assert scorer.score(company, dm) >= 80
 
