@@ -1,98 +1,72 @@
 # Job Hunter Parser
 
-Multi-channel job hunting automation built with **hexagonal architecture** organized by **bounded context** (package by feature, not by layer).
+Multi-channel job hunting automation: scrape job boards, find decision makers, generate personalized outreach via LLM, export for manual sending across LinkedIn, Email, Twitter, Telegram, Discord.
 
-Scrapes job boards (Y Combinator, web3.career, RustJobs, Wellfound, RemoteOK), finds decision makers at target companies, generates personalized outreach messages via LLM, and exports leads ready for manual sending across LinkedIn, Email, Twitter, Telegram, Discord.
-
-## Why package by feature?
-
-Code belongs to the **module it describes**, not to the abstract layer it lives in. Everything about "companies" lives under `companies/`, everything about "leads" lives under `leads/`, etc. Each module is its own mini-hexagon (domain / application / infrastructure).
-
-Benefits:
-- Less jumping between folders when working on a feature
-- Clear bounded contexts (easy to split into microservices later)
-- Dependencies between modules are explicit (only via ports, never via transitive domain imports)
-- New engineers onboard by reading one module at a time
+Built with **hexagonal architecture** (ports & adapters) organized by feature module.
 
 ## Why
 
 Mass "Easy Apply" on LinkedIn has <0.5% conversion. Personalized direct outreach to decision makers (CTO, Head of Engineering, Founders) has 5-15% conversion. This tool scales that approach: parse once, send manually with full personalization.
 
-## Architecture
+## Structure
 
-```
+Each module is a feature slice. Inside: `models.py` (data), `ports.py` (interfaces), and adapters (concrete implementations).
+
+```text
 src/
-├── shared/
-│   └── kernel/                      # shared value objects
-│       ├── email.py
-│       ├── linkedin_url.py
-│       ├── tech_stack.py
-│       └── seniority.py
+├── shared.py              # common value objects: Email, LinkedInUrl, TechStack, Seniority
 │
-├── companies/                       # MODULE: companies + job postings
-│   ├── domain/
-│   │   ├── company.py
-│   │   └── job_posting.py
-│   ├── application/ports/
-│   │   └── company_source.py        # outbound port
-│   └── infrastructure/scrapers/     # YC, web3.career, RustJobs, Wellfound
+├── companies/             # companies + job postings
+│   ├── models.py          # Company, JobPosting
+│   ├── ports.py           # CompanySource
+│   └── scrapers/          # YC, web3, rustjobs, wellfound, remoteok
 │
-├── people/                          # MODULE: decision makers
-│   ├── domain/
-│   │   └── decision_maker.py
-│   ├── application/ports/
-│   │   ├── decision_maker_search.py
-│   │   └── contact_enrichment.py
-│   └── infrastructure/              # Apollo, Hunter, LinkedIn
+├── people/                # decision makers
+│   ├── models.py          # DecisionMaker, DecisionMakerRole
+│   ├── ports.py           # DecisionMakerSearch, ContactEnrichment
+│   └── adapters/          # Apollo, Hunter, LinkedIn
 │
-├── leads/                           # MODULE: leads (Company + DecisionMaker aggregate)
-│   ├── domain/
-│   │   ├── lead.py
-│   │   └── lead_scorer.py           # domain service
-│   ├── application/ports/
-│   │   └── lead_repository.py
-│   └── infrastructure/              # PostgreSQL repo
+├── leads/                 # Company + DecisionMaker pair
+│   ├── models.py          # Lead, LeadStatus
+│   ├── scorer.py          # LeadScorer (relevance 0-100)
+│   ├── ports.py           # LeadRepository
+│   └── repo.py            # Postgres implementation
 │
-├── outreach/                        # MODULE: outreach messages
-│   ├── domain/
-│   │   └── outreach_message.py
-│   ├── application/ports/
-│   │   ├── llm_generator.py
-│   │   └── outreach_log.py
-│   └── infrastructure/              # Claude, export
+├── outreach/              # personalized messages
+│   ├── models.py          # OutreachMessage, OutreachChannel
+│   ├── ports.py           # LLMGenerator, OutreachLog
+│   ├── llm.py             # Claude adapter
+│   └── log.py             # Postgres log
 │
-├── hunting/                         # MODULE: cross-module orchestration
-│   └── application/
-│       ├── ports/                   # JobHunterService (inbound facade)
-│       └── use_cases/               # scrape_enrich_generate flow
-│
-├── presentation/cli/                # Typer CLI
-└── di/                              # Dishka container
+├── pipeline.py            # orchestrates: scrape → enrich → score → generate
+├── cli.py                 # Typer CLI entry point
+├── config.py              # Pydantic Settings
+└── di.py                  # Dishka container (wires adapters to ports)
 ```
 
-Each module follows the hexagonal architecture:
-- **domain/** — pure business logic, no external dependencies
-- **application/ports/** — interfaces (abstractions)
-- **application/use_cases/** — orchestrate domain logic (in `hunting/` for cross-module flows)
-- **infrastructure/** — concrete adapters implementing the ports
+Rules:
 
-Modules never import domain entities from other modules directly except through well-defined ports or via `shared/kernel`.
+- Modules talk to each other only through **ports** (interfaces) or `shared.py`.
+- `models.py` has no external dependencies beyond `shared.py`.
+- `ports.py` has abstract classes only.
+- Adapters implement ports and can use whatever libraries they need.
+- `pipeline.py` orchestrates ports, never adapters directly.
 
 ## Pipeline
 
-```
-1. SCRAPE    → companies module parses job boards    → Company entities
-2. ENRICH    → people module finds decision makers   → DecisionMaker entities
-3. SCORE     → leads module pairs + scores           → Lead aggregates
-4. GENERATE  → outreach module calls LLM per lead    → OutreachMessage
-5. EXPORT    → leads exported to Google Sheets / CSV → you send manually
-6. TRACK     → log replies and convert funnel
+```text
+1. SCRAPE    → CompanySource yields companies from job boards
+2. ENRICH    → DecisionMakerSearch finds CTOs/CEOs; ContactEnrichment adds emails
+3. SCORE     → LeadScorer rates each (company, person) pair
+4. GENERATE  → LLMGenerator creates personalized message
+5. EXPORT    → leads dumped to Google Sheets / CSV for manual sending
+6. TRACK     → OutreachLog records sent/replied, computes funnel
 ```
 
 ## Tech Stack
 
 - **Python 3.12**
-- **Pydantic v2** — validation and settings
+- **Pydantic v2** — models and settings
 - **Dishka** — dependency injection
 - **SQLAlchemy 2.0 async** + **asyncpg** — persistence
 - **Alembic** — migrations
@@ -101,7 +75,7 @@ Modules never import domain entities from other modules directly except through 
 - **Anthropic SDK** — LLM
 - **Loguru** — logging
 - **Pytest** — tests
-- **Ruff** + **Mypy** — linting and type checking
+- **Ruff** + **Mypy** — lint and types
 - **Docker Compose** — local PostgreSQL
 
 ## Quick Start
@@ -122,27 +96,25 @@ cp .env.example .env
 docker-compose up -d
 alembic upgrade head
 
-jhp scrape yc --limit 100
-jhp enrich --source apollo
-jhp generate-messages
-jhp export --format csv
+jhp scrape yc --limit 100 --tech python --tech rust
+jhp enrich
+jhp generate-messages --channel linkedin
+jhp export --output leads.csv
 ```
 
 ## Roadmap
 
-- [x] Repo setup and bounded-context module structure
-- [x] Domain entities and ports across modules
-- [ ] YC scraper adapter (`companies/infrastructure/scrapers/yc_scraper.py`)
-- [ ] Apollo enrichment adapter (`people/infrastructure/apollo_adapter.py`)
-- [ ] Claude LLM adapter (`outreach/infrastructure/claude_adapter.py`)
-- [ ] PostgreSQL lead repository (`leads/infrastructure/lead_repository_pg.py`)
-- [ ] `hunting` use cases wiring everything together
-- [ ] Dishka DI container
-- [ ] CLI commands
+- [x] Module-per-feature structure
+- [x] Models, ports, scorer, pipeline skeleton
+- [ ] YC scraper (`companies/scrapers/yc.py`)
+- [ ] Apollo adapter (`people/adapters/apollo.py`)
+- [ ] Claude LLM (`outreach/llm.py`)
+- [ ] Postgres repo (`leads/repo.py`) + Alembic migrations
+- [ ] Dishka container (`di.py`)
+- [ ] CLI wired to pipeline
 - [ ] Google Sheets export
-- [ ] web3.career + RustJobs + Wellfound + RemoteOK scrapers
+- [ ] web3.career, RustJobs, Wellfound, RemoteOK scrapers
 - [ ] Outreach tracking and funnel metrics
-- [ ] Integration tests
 
 ## License
 

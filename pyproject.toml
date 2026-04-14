@@ -57,7 +57,7 @@ dev = [
 ]
 
 [project.scripts]
-jhp = "presentation.cli.main:app"
+jhp = "src.cli:app"
 
 [build-system]
 requires = ["hatchling"]
