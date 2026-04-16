@@ -13,19 +13,22 @@ app = typer.Typer(
 )
 console = Console()
 
-SOURCES = {
-    "remoteok": "src.companies.scrapers.remoteok:RemoteOKScraper",
-    "web3": "src.companies.scrapers.web3career:Web3CareerScraper",
-}
+SOURCES = ["remoteok", "web3", "linkedin", "rustjobs"]
 
 
-def _get_scraper(source: str):
+def _get_scraper(source: str, category: str = "rust"):
     if source == "remoteok":
         from src.companies.scrapers.remoteok import RemoteOKScraper
         return RemoteOKScraper()
     elif source == "web3":
         from src.companies.scrapers.web3career import Web3CareerScraper
-        return Web3CareerScraper(category="rust")
+        return Web3CareerScraper(category=category)
+    elif source == "linkedin":
+        from src.companies.scrapers.linkedin import LinkedInScraper
+        return LinkedInScraper()
+    elif source == "rustjobs":
+        from src.companies.scrapers.rustjobs import RustJobsScraper
+        return RustJobsScraper()
     else:
         console.print(f"[red]Unknown source:[/] {source}. Available: {', '.join(SOURCES)}")
         raise typer.Exit(1)
