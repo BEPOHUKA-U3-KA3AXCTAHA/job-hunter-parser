@@ -1,7 +1,7 @@
 """Apollo.io adapter - finds decision makers and enriches contacts.
 
-Free tier: 10,000 credits/month. Each people search = 1 credit.
-API docs: https://apolloio.github.io/apollo-api-docs/
+Free tier: 75 credits/month. Each people search = 1 credit.
+API docs: https://docs.apollo.io/reference/people-api-search
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from src.people.models import DecisionMaker, DecisionMakerRole
 from src.people.ports import ContactEnrichment, DecisionMakerSearch
 from src.shared import Email, LinkedInUrl
 
-_API_BASE = "https://api.apollo.io/v1"
+_API_BASE = "https://api.apollo.io/api/v1"
 
 _ROLE_TITLES = {
     DecisionMakerRole.FOUNDER: ["founder", "co-founder"],
@@ -33,6 +33,11 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
+        self._headers = {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+            "X-Api-Key": api_key,
+        }
 
     async def find(
         self,
@@ -47,22 +52,20 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
         if not title_keywords:
             title_keywords = ["cto", "founder", "head of engineering"]
 
-        domain = _extract_domain(company.website) if company.website else None
-        org_name = company.name
-
         async with httpx.AsyncClient(timeout=30) as client:
-            payload = {
-                "api_key": self._api_key,
-                "q_organization_name": org_name,
-                "person_titles": title_keywords,
-                "page": 1,
+            params = {
+                "person_titles[]": title_keywords,
+                "q_organization_name": company.name,
                 "per_page": limit,
+                "page": 1,
             }
-            if domain:
-                payload["q_organization_domains"] = domain
 
             try:
-                resp = await client.post(f"{_API_BASE}/mixed_people/search", json=payload)
+                resp = await client.post(
+                    f"{_API_BASE}/mixed_people/search",
+                    headers=self._headers,
+                    params=params,
+                )
                 resp.raise_for_status()
                 data = resp.json()
             except httpx.HTTPError as e:
@@ -110,8 +113,8 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
             try:
                 resp = await client.post(
                     f"{_API_BASE}/people/match",
+                    headers=self._headers,
                     json={
-                        "api_key": self._api_key,
                         "first_name": decision_maker.full_name.split()[0] if decision_maker.full_name else "",
                         "last_name": decision_maker.full_name.split()[-1] if decision_maker.full_name else "",
                         "organization_name": company_domain,
@@ -140,10 +143,6 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
                 pass
 
         return decision_maker
-
-
-def _extract_domain(url: str) -> str:
-    return url.replace("https://", "").replace("http://", "").split("/")[0]
 
 
 def _detect_role(title: str) -> DecisionMakerRole:
