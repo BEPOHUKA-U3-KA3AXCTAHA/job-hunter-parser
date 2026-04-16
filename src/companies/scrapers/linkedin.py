@@ -1,8 +1,4 @@
-"""LinkedIn public job search scraper - no auth required.
-
-Uses LinkedIn's public job search page which returns server-rendered HTML.
-No login needed, but rate-limited - don't hammer it.
-"""
+"""LinkedIn public job search scraper - no auth required."""
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +11,7 @@ from loguru import logger
 
 from src.companies.models import Company, JobPosting
 from src.companies.ports import CompanySource
-from src.shared import Seniority, TechStack
+from src.shared import SearchCriteria, Seniority
 
 _BASE_URL = "https://www.linkedin.com/jobs/search/"
 _HEADERS = {
@@ -30,19 +26,14 @@ class LinkedInScraper(CompanySource):
     def __init__(self, location: str = "Remote") -> None:
         self._location = location
 
-    async def fetch_companies(
-        self,
-        tech_stack_filter: list[str] | None = None,
-        limit: int = 100,
-    ) -> AsyncIterator[Company]:
-        postings = await self._fetch_all_postings(tech_stack_filter, limit * 2)
+    async def fetch_companies(self, criteria: SearchCriteria) -> AsyncIterator[Company]:
+        postings = await self._fetch_all(criteria)
         seen: dict[str, Company] = {}
 
         for p in postings:
             name = p["company"]
             if not name or name in seen:
                 continue
-
             seen[name] = Company(
                 name=name,
                 is_hiring=True,
@@ -50,22 +41,20 @@ class LinkedInScraper(CompanySource):
                 source_url=p["link"],
                 location=p["location"],
             )
-            if len(seen) >= limit:
+            if len(seen) >= criteria.limit_per_source:
                 break
 
         logger.info("LinkedIn: found {} companies", len(seen))
         for company in seen.values():
             yield company
 
-    async def fetch_job_postings(
-        self,
-        company_id: str | None = None,
-        tech_stack_filter: list[str] | None = None,
-        limit: int = 100,
-    ) -> AsyncIterator[JobPosting]:
-        postings = await self._fetch_all_postings(tech_stack_filter, limit)
+    async def fetch_job_postings(self, criteria: SearchCriteria) -> AsyncIterator[JobPosting]:
+        postings = await self._fetch_all(criteria)
 
         for p in postings:
+            if not criteria.matches_title(p["title"]):
+                continue
+
             yield JobPosting(
                 company_id=0,
                 title=p["title"],
@@ -77,19 +66,15 @@ class LinkedInScraper(CompanySource):
 
         logger.info("LinkedIn: yielded {} postings", len(postings))
 
-    async def _fetch_all_postings(
-        self,
-        tech_stack_filter: list[str] | None,
-        limit: int,
-    ) -> list[dict]:
-        keywords = " ".join(tech_stack_filter) if tech_stack_filter else "python backend"
+    async def _fetch_all(self, criteria: SearchCriteria) -> list[dict]:
+        keywords = " ".join(criteria.tech_stack + criteria.roles)
         keywords_q = quote_plus(f"{keywords} {self._location}")
 
         all_postings: list[dict] = []
-        pages_needed = min((limit // 25) + 1, 4)  # max 4 pages to avoid rate limiting
+        pages = min((criteria.limit_per_source // 25) + 1, 4)
 
         async with httpx.AsyncClient(headers=_HEADERS, timeout=30, follow_redirects=True) as client:
-            for page in range(pages_needed):
+            for page in range(pages):
                 start = page * 25
                 url = f"{_BASE_URL}?keywords={keywords_q}&position=1&pageNum={page}&start={start}"
 
@@ -103,20 +88,18 @@ class LinkedInScraper(CompanySource):
                 parsed = _parse_page(resp.text)
                 all_postings.extend(parsed)
 
-                if len(all_postings) >= limit or len(parsed) < 10:
+                if len(all_postings) >= criteria.limit_per_source or len(parsed) < 10:
                     break
+                await asyncio.sleep(2)
 
-                await asyncio.sleep(2)  # be polite
-
-        return all_postings[:limit]
+        return all_postings[:criteria.limit_per_source]
 
 
 def _parse_page(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
-    cards = soup.select(".base-card")
     results = []
 
-    for card in cards:
+    for card in soup.select(".base-card"):
         title_el = card.select_one(".base-search-card__title")
         company_el = card.select_one(".base-search-card__subtitle")
         location_el = card.select_one(".job-search-card__location")

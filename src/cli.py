@@ -195,17 +195,74 @@ def scrape_all(
 
 
 @app.command()
-def enrich() -> None:
-    """Find decision makers and enrich with contacts."""
-    console.print("[yellow]TODO:[/] enrich")
-
-
-@app.command("generate-messages")
-def generate_messages(
-    channel: str = typer.Option("linkedin", help="linkedin | email | twitter"),
+def hunt(
+    limit: int = typer.Option(20, help="Max companies per source"),
+    tech: list[str] | None = typer.Option(None, help="Tech filter, e.g. --tech python --tech rust"),
+    salary_min: int | None = typer.Option(None, help="Min salary USD/year, e.g. 60000"),
+    channel: str = typer.Option("linkedin", help="Message channel: linkedin | email | twitter"),
+    output: str = typer.Option("leads_full.csv", "-o", help="Output CSV"),
+    apollo_key: str | None = typer.Option(None, envvar="APOLLO_API_KEY", help="Apollo.io API key"),
+    anthropic_key: str | None = typer.Option(None, envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
 ) -> None:
-    """Generate personalized outreach messages via LLM."""
-    console.print(f"[yellow]TODO:[/] generate messages for {channel}")
+    """FULL PIPELINE: scrape all sources -> find contacts -> generate messages -> CSV.
+
+    This is the main command. One button does everything.
+    """
+    from src.outreach.models import OutreachChannel
+    from src.pipeline import run_pipeline
+    from src.shared import CandidateProfile, SearchCriteria
+
+    async def _run():
+        criteria = SearchCriteria(
+            tech_stack=tech or ["python", "rust"],
+            salary_min_usd=salary_min,
+            limit_per_source=limit,
+        )
+        profile = CandidateProfile()
+
+        # Build scrapers
+        sources = []
+        for name in SOURCES:
+            try:
+                sources.append(_get_scraper(name))
+            except Exception:
+                pass
+
+        # Build enrichment (optional)
+        dm_search = None
+        enrichment = None
+        if apollo_key:
+            from src.people.adapters.apollo import ApolloAdapter
+            adapter = ApolloAdapter(apollo_key)
+            dm_search = adapter
+            enrichment = adapter
+            console.print("[green]Apollo enrichment enabled[/]")
+        else:
+            console.print("[yellow]No APOLLO_API_KEY - skipping contact enrichment[/]")
+
+        # Build LLM (optional)
+        llm = None
+        if anthropic_key:
+            from src.outreach.llm import ClaudeLLMAdapter
+            llm = ClaudeLLMAdapter(anthropic_key)
+            console.print("[green]Claude message generation enabled[/]")
+        else:
+            console.print("[yellow]No ANTHROPIC_API_KEY - skipping message generation[/]")
+
+        ch = OutreachChannel(channel)
+
+        await run_pipeline(
+            sources=sources,
+            dm_search=dm_search,
+            enrichment=enrichment,
+            llm=llm,
+            criteria=criteria,
+            profile=profile,
+            channel=ch,
+            output_csv=output,
+        )
+
+    asyncio.run(_run())
 
 
 def _save_csv(filepath: str, rows: list[dict]) -> None:

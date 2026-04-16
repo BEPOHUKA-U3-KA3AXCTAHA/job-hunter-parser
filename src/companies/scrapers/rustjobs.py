@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright
 
 from src.companies.models import Company, JobPosting
 from src.companies.ports import CompanySource
-from src.shared import Seniority, TechStack
+from src.shared import SearchCriteria, Seniority, TechStack
 
 _URL = "https://rustjobs.dev/locations/remote"
 
@@ -16,11 +16,7 @@ _URL = "https://rustjobs.dev/locations/remote"
 class RustJobsScraper(CompanySource):
     source_name = "rustjobs"
 
-    async def fetch_companies(
-        self,
-        tech_stack_filter: list[str] | None = None,
-        limit: int = 100,
-    ) -> AsyncIterator[Company]:
+    async def fetch_companies(self, criteria: SearchCriteria) -> AsyncIterator[Company]:
         postings = await self._scrape_page()
         seen: dict[str, Company] = {}
 
@@ -29,11 +25,10 @@ class RustJobsScraper(CompanySource):
             if not name or name in seen:
                 continue
 
-            tags = p.get("tags", [])
-            if tech_stack_filter:
-                if not any(t.lower() in [x.lower() for x in tags] for t in tech_stack_filter):
-                    continue
+            if not criteria.matches_title(p["title"]):
+                continue
 
+            tags = p.get("tags", [])
             seen[name] = Company(
                 name=name,
                 tech_stack=TechStack(frozenset(t.lower() for t in tags)),
@@ -42,28 +37,22 @@ class RustJobsScraper(CompanySource):
                 source_url=p.get("link"),
                 location=p.get("location"),
             )
-            if len(seen) >= limit:
+            if len(seen) >= criteria.limit_per_source:
                 break
 
         logger.info("RustJobs: found {} companies", len(seen))
         for company in seen.values():
             yield company
 
-    async def fetch_job_postings(
-        self,
-        company_id: str | None = None,
-        tech_stack_filter: list[str] | None = None,
-        limit: int = 100,
-    ) -> AsyncIterator[JobPosting]:
+    async def fetch_job_postings(self, criteria: SearchCriteria) -> AsyncIterator[JobPosting]:
         postings = await self._scrape_page()
         count = 0
 
         for p in postings:
-            tags = p.get("tags", [])
-            if tech_stack_filter:
-                if not any(t.lower() in [x.lower() for x in tags] for t in tech_stack_filter):
-                    continue
+            if not criteria.matches_title(p["title"]):
+                continue
 
+            tags = p.get("tags", [])
             yield JobPosting(
                 company_id=0,
                 title=p["title"],
@@ -74,7 +63,7 @@ class RustJobsScraper(CompanySource):
                 source_url=p.get("link"),
             )
             count += 1
-            if count >= limit:
+            if count >= criteria.limit_per_source:
                 break
 
         logger.info("RustJobs: yielded {} postings", count)
@@ -91,15 +80,12 @@ class RustJobsScraper(CompanySource):
                 postings = await page.evaluate("""
                     () => {
                         const results = [];
-                        // RustJobs uses card-like elements for job listings
                         const cards = document.querySelectorAll('a[href*="/jobs/"], a[href*="featured-jobs"]');
-
                         for (const card of cards) {
                             const title = card.querySelector('h3, h2, [class*="title"]');
                             const company = card.querySelector('[class*="company"], [class*="org"]');
                             const location = card.querySelector('[class*="location"]');
                             const tags = card.querySelectorAll('[class*="tag"], [class*="badge"], [class*="skill"]');
-
                             if (title) {
                                 results.push({
                                     title: title.innerText.trim(),

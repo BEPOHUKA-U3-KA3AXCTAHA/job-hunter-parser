@@ -10,14 +10,13 @@ from loguru import logger
 
 from src.companies.models import Company, JobPosting
 from src.companies.ports import CompanySource
-from src.shared import Seniority, TechStack
+from src.shared import SearchCriteria, Seniority, TechStack
 
 _BASE_URL = "https://web3.career"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (job-hunter-parser/0.1)"}
-
 _SALARY_RE = re.compile(r"\$(\d+)k\s*-\s*\$(\d+)k")
 
-_SEARCH_URLS = {
+_CATEGORY_URLS = {
     "rust": "/rust-jobs",
     "python": "/python-jobs",
     "backend": "/backend-jobs",
@@ -32,51 +31,41 @@ class Web3CareerScraper(CompanySource):
     def __init__(self, category: str = "rust") -> None:
         self._category = category
 
-    async def fetch_companies(
-        self,
-        tech_stack_filter: list[str] | None = None,
-        limit: int = 100,
-    ) -> AsyncIterator[Company]:
+    async def fetch_companies(self, criteria: SearchCriteria) -> AsyncIterator[Company]:
         rows = await self._fetch_rows()
         seen: dict[str, Company] = {}
 
         for row in rows:
             parsed = _parse_row(row)
-            if not parsed:
+            if not parsed or not parsed["company"]:
                 continue
 
             name = parsed["company"]
-            if not name or name in seen:
+            if name in seen:
                 continue
 
-            tags = parsed["tags"]
-            if tech_stack_filter:
-                if not any(t.lower() in tags for t in tech_stack_filter):
-                    continue
+            if not criteria.matches_title(parsed["title"]):
+                continue
+
+            if not criteria.matches_salary(parsed["salary_min"]):
+                continue
 
             seen[name] = Company(
                 name=name,
-                tech_stack=TechStack(frozenset(tags)),
+                tech_stack=TechStack(frozenset(parsed["tags"])),
                 is_hiring=True,
                 source="web3.career",
                 source_url=f"{_BASE_URL}{parsed['link']}" if parsed["link"] else None,
                 location=parsed["location"],
             )
-
-            if len(seen) >= limit:
+            if len(seen) >= criteria.limit_per_source:
                 break
 
-        logger.info("web3.career: found {} companies (category={})", len(seen), self._category)
-
+        logger.info("web3.career: found {} companies", len(seen))
         for company in seen.values():
             yield company
 
-    async def fetch_job_postings(
-        self,
-        company_id: str | None = None,
-        tech_stack_filter: list[str] | None = None,
-        limit: int = 100,
-    ) -> AsyncIterator[JobPosting]:
+    async def fetch_job_postings(self, criteria: SearchCriteria) -> AsyncIterator[JobPosting]:
         rows = await self._fetch_rows()
         count = 0
 
@@ -85,15 +74,16 @@ class Web3CareerScraper(CompanySource):
             if not parsed:
                 continue
 
-            tags = parsed["tags"]
-            if tech_stack_filter:
-                if not any(t.lower() in tags for t in tech_stack_filter):
-                    continue
+            if not criteria.matches_title(parsed["title"]):
+                continue
+
+            if not criteria.matches_salary(parsed["salary_min"]):
+                continue
 
             yield JobPosting(
                 company_id=0,
                 title=parsed["title"],
-                tech_stack=TechStack(frozenset(tags)),
+                tech_stack=TechStack(frozenset(parsed["tags"])),
                 seniority=Seniority.from_text(parsed["title"]),
                 is_remote="remote" in parsed.get("location", "").lower(),
                 location=parsed["location"],
@@ -102,19 +92,17 @@ class Web3CareerScraper(CompanySource):
                 salary_currency="USD" if parsed["salary_min"] else None,
                 source_url=f"{_BASE_URL}{parsed['link']}" if parsed["link"] else None,
             )
-
             count += 1
-            if count >= limit:
+            if count >= criteria.limit_per_source:
                 break
 
-        logger.info("web3.career: yielded {} job postings", count)
+        logger.info("web3.career: yielded {} postings", count)
 
     async def _fetch_rows(self) -> list:
-        url = f"{_BASE_URL}{_SEARCH_URLS.get(self._category, '/remote-jobs')}"
+        url = f"{_BASE_URL}{_CATEGORY_URLS.get(self._category, '/remote-jobs')}"
         async with httpx.AsyncClient(headers=_HEADERS, timeout=30) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-
         soup = BeautifulSoup(resp.text, "html.parser")
         return soup.select("tr.table_row")
 
