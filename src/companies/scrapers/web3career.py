@@ -104,7 +104,7 @@ class Web3CareerScraper(CompanySource):
         all_rows: list = []
 
         async with httpx.AsyncClient(headers=_HEADERS, timeout=30) as client:
-            for page in range(1, 6):  # up to 5 pages ~= 80-100 rows
+            for page in range(1, 11):  # up to 10 pages ~= 200+ rows
                 url = base if page == 1 else f"{base}?page={page}"
                 try:
                     resp = await client.get(url)

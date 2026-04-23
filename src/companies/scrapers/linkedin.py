@@ -71,7 +71,7 @@ class LinkedInScraper(CompanySource):
         keywords_q = quote_plus(f"{keywords} {self._location}")
 
         all_postings: list[dict] = []
-        pages = min((criteria.limit_per_source // 25) + 1, 4)
+        pages = min((criteria.limit_per_source // 25) + 1, 10)  # up to 10 pages = 250 rows
 
         async with httpx.AsyncClient(headers=_HEADERS, timeout=30, follow_redirects=True) as client:
             for page in range(pages):

@@ -110,6 +110,7 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
 
     tech_str = ", ".join(sorted(company.tech_stack.technologies))
 
+    now = datetime.utcnow()
     if row:
         # update existing - refresh fields that may change
         row.website = company.website or row.website
@@ -118,7 +119,9 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
         row.location = company.location or row.location
         row.is_hiring = company.is_hiring or row.is_hiring
         row.source_url = company.source_url or row.source_url
-        row.last_seen_at = datetime.utcnow()
+        row.last_seen_at = now
+        if company.is_hiring:
+            row.last_hiring_verified_at = now
         row._is_new = False
     else:
         row = CompanyRow(
@@ -131,6 +134,9 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
             is_hiring=company.is_hiring,
             source=company.source,
             source_url=company.source_url,
+            first_seen_at=now,
+            last_seen_at=now,
+            last_hiring_verified_at=now if company.is_hiring else None,
         )
         session.add(row)
         await session.flush()
@@ -153,13 +159,14 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
     )
     row = result.scalar_one_or_none()
 
+    now = datetime.utcnow()
     if row:
-        # update if we have better data now
         row.title_raw = dm.title_raw or row.title_raw
         row.email = (str(dm.email) if dm.email else None) or row.email
         row.linkedin_url = (str(dm.linkedin_url) if dm.linkedin_url else None) or row.linkedin_url
         row.twitter_handle = dm.twitter_handle or row.twitter_handle
-        row.last_seen_at = datetime.utcnow()
+        row.last_seen_at = now
+        row.last_verified_at = now  # every time we see them = re-verify currency
         row._is_new = False
     else:
         row = DecisionMakerRow(
@@ -171,6 +178,9 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
             linkedin_url=str(dm.linkedin_url) if dm.linkedin_url else None,
             twitter_handle=dm.twitter_handle,
             location=dm.location,
+            first_seen_at=now,
+            last_seen_at=now,
+            last_verified_at=now,
         )
         session.add(row)
         await session.flush()

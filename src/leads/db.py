@@ -1,10 +1,17 @@
-"""SQLAlchemy ORM models + async engine for SQLite persistence."""
+"""SQLAlchemy ORM models + async engine.
+
+Supports both SQLite (default, zero config) and PostgreSQL via DATABASE_URL env.
+
+SQLite:     DATABASE_URL=sqlite+aiosqlite:///jhp.db  (default)
+PostgreSQL: DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/jhp
+"""
 from __future__ import annotations
 
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -20,15 +27,17 @@ class CompanyRow(Base):
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
     website: Mapped[str | None] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(String(2000))
-    tech_stack: Mapped[str | None] = mapped_column(String(500))  # comma-separated
+    tech_stack: Mapped[str | None] = mapped_column(String(500))
     headcount: Mapped[int | None]
     location: Mapped[str | None] = mapped_column(String(200))
     is_hiring: Mapped[bool] = mapped_column(default=True)
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500))
 
-    discovered_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # Dating
+    first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_hiring_verified_at: Mapped[datetime | None]  # last time we saw them posting jobs
 
     decision_makers: Mapped[list[DecisionMakerRow]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
@@ -49,13 +58,18 @@ class DecisionMakerRow(Base):
     linkedin_url: Mapped[str | None] = mapped_column(String(500))
     twitter_handle: Mapped[str | None] = mapped_column(String(100))
     location: Mapped[str | None] = mapped_column(String(200))
-    source: Mapped[str | None] = mapped_column(String(50))  # theorg / apollo / apify
+    source: Mapped[str | None] = mapped_column(String(50))
 
-    discovered_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # Dating - when was this contact last verified as current
+    first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_verified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time source confirmed them
 
     company: Mapped[CompanyRow] = relationship(back_populates="decision_makers")
     leads: Mapped[list[LeadRow]] = relationship(back_populates="decision_maker")
+
+    def is_fresh(self, max_age_days: int = 30) -> bool:
+        return (datetime.utcnow() - self.last_verified_at) < timedelta(days=max_age_days)
 
 
 class LeadRow(Base):
@@ -72,6 +86,10 @@ class LeadRow(Base):
 
     generated_message: Mapped[str | None] = mapped_column(String(4000))
     generated_message_channel: Mapped[str | None] = mapped_column(String(20))
+    message_generated_at: Mapped[datetime | None]
+
+    contacted_at: Mapped[datetime | None]
+    replied_at: Mapped[datetime | None]
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -98,13 +116,31 @@ class JobPostingRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500), index=True)
 
-    posted_at: Mapped[datetime | None]
-    discovered_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # Dating - when the posting was originally made (from source) vs when we saw it
+    source_posted_at: Mapped[datetime | None]  # if source provides posting date
+    first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(default=True)  # false when posting disappears from source
 
 
 # --- Engine & session factory ---
 
-_DB_PATH = "jhp.db"
+def _get_database_url() -> str:
+    # 1. env var wins
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if url:
+        # normalize common forms
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgresql://") and "+asyncpg" not in url:
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif url.startswith("sqlite:///") and "+aiosqlite" not in url:
+            url = url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+        return url
+    # 2. default: SQLite file in project root
+    return "sqlite+aiosqlite:///jhp.db"
+
+
 _engine = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
@@ -112,7 +148,7 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 def get_engine():
     global _engine
     if _engine is None:
-        _engine = create_async_engine(f"sqlite+aiosqlite:///{_DB_PATH}", echo=False)
+        _engine = create_async_engine(_get_database_url(), echo=False)
     return _engine
 
 
@@ -124,6 +160,12 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Create all tables if they don't exist."""
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+def describe_db() -> str:
+    url = _get_database_url()
+    if url.startswith("sqlite"):
+        return f"SQLite file: {url.split('///')[-1]}"
+    return url.split("@")[-1] if "@" in url else url

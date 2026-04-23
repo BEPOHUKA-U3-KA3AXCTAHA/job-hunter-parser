@@ -381,8 +381,10 @@ def contacts(
     limit: int = typer.Option(50, help="Max rows"),
     role: str | None = typer.Option(None, help="Filter by role (ceo|cto|founder|...)"),
     company: str | None = typer.Option(None, help="Filter by company name"),
+    max_age_days: int = typer.Option(30, help="Only show contacts verified within N days (0=all)"),
 ) -> None:
     """List all decision makers in DB."""
+    from datetime import datetime, timedelta
     from sqlalchemy import select
     from src.leads.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
 
@@ -390,11 +392,14 @@ def contacts(
         await init_db()
         Session = get_session_maker()
         async with Session() as session:
-            stmt = select(DecisionMakerRow, CompanyRow).join(CompanyRow).order_by(DecisionMakerRow.last_seen_at.desc()).limit(limit)
+            stmt = select(DecisionMakerRow, CompanyRow).join(CompanyRow).order_by(DecisionMakerRow.last_verified_at.desc()).limit(limit)
             if role:
                 stmt = stmt.where(DecisionMakerRow.role == role)
             if company:
                 stmt = stmt.where(CompanyRow.name.ilike(f"%{company}%"))
+            if max_age_days > 0:
+                cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+                stmt = stmt.where(DecisionMakerRow.last_verified_at >= cutoff)
             result = await session.execute(stmt)
             rows = result.all()
 
@@ -403,18 +408,63 @@ def contacts(
         table.add_column("Name", style="cyan")
         table.add_column("Role")
         table.add_column("Company")
-        table.add_column("Email", style="green")
+        table.add_column("Verified", style="green")
         table.add_column("LinkedIn", style="dim")
 
+        now = datetime.utcnow()
         for i, (dm, comp) in enumerate(rows, 1):
+            age_days = (now - dm.last_verified_at).days
+            freshness = f"{age_days}d ago" if age_days > 0 else "today"
+            freshness_style = "[green]" if age_days < 7 else "[yellow]" if age_days < 30 else "[red]"
             table.add_row(
                 str(i), dm.full_name,
                 (dm.title_raw or dm.role)[:30],
                 comp.name[:30],
-                (dm.email or "-")[:35],
+                f"{freshness_style}{freshness}[/]",
                 (dm.linkedin_url or "-")[:40],
             )
         console.print(table)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def stale(
+    max_age_days: int = typer.Option(30, help="Contacts older than N days are stale"),
+    limit: int = typer.Option(50, help="Max rows"),
+) -> None:
+    """List contacts that haven't been re-verified in N days."""
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from src.leads.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
+
+    async def _run():
+        await init_db()
+        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+        Session = get_session_maker()
+        async with Session() as session:
+            stmt = (
+                select(DecisionMakerRow, CompanyRow)
+                .join(CompanyRow)
+                .where(DecisionMakerRow.last_verified_at < cutoff)
+                .order_by(DecisionMakerRow.last_verified_at.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.all()
+
+        console.print(f"[yellow]Contacts older than {max_age_days} days (need re-scraping):[/]")
+        table = Table()
+        table.add_column("Name", style="cyan")
+        table.add_column("Role")
+        table.add_column("Company")
+        table.add_column("Last verified", style="red")
+        now = datetime.utcnow()
+        for dm, comp in rows:
+            age = (now - dm.last_verified_at).days
+            table.add_row(dm.full_name, dm.role, comp.name, f"{age} days ago")
+        console.print(table)
+        console.print(f"\nTotal stale: [red]{len(rows)}[/]")
 
     asyncio.run(_run())
 
