@@ -148,6 +148,20 @@ async def run_pipeline(
 
     console.print(f"  [green]Generated {sum(1 for r in results if r.message)} messages[/]")
 
+    # Step 3.5: Save to DB (deduplication + history)
+    console.print("\n[bold cyan]Saving to DB...[/]")
+    try:
+        from src.leads.db import init_db
+        from src.leads.repo import SqliteLeadRepository
+        await init_db()
+        repo = SqliteLeadRepository()
+        real_leads = [l for l in leads if l.decision_maker.full_name != "Unknown (find manually)"]
+        await repo.save_many(real_leads)
+        total_in_db = await repo.count()
+        console.print(f"  [green]DB now has {total_in_db} total leads[/]")
+    except Exception as e:
+        console.print(f"  [red]DB save failed: {e}[/]")
+
     # Step 4: Export to CSV
     console.print(f"\n[bold cyan]Step 4/4: Exporting to {output_csv}...[/]")
     _export_csv(results, output_csv)

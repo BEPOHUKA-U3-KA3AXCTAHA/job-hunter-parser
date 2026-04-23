@@ -47,6 +47,7 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+jhp.db
 
 # Output files
 output/

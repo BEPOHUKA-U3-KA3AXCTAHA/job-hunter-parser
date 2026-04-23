@@ -99,12 +99,25 @@ class Web3CareerScraper(CompanySource):
         logger.info("web3.career: yielded {} postings", count)
 
     async def _fetch_rows(self) -> list:
-        url = f"{_BASE_URL}{_CATEGORY_URLS.get(self._category, '/remote-jobs')}"
+        """Fetch multiple pages of job listings to get more rows."""
+        base = f"{_BASE_URL}{_CATEGORY_URLS.get(self._category, '/remote-jobs')}"
+        all_rows: list = []
+
         async with httpx.AsyncClient(headers=_HEADERS, timeout=30) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        return soup.select("tr.table_row")
+            for page in range(1, 6):  # up to 5 pages ~= 80-100 rows
+                url = base if page == 1 else f"{base}?page={page}"
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                except httpx.HTTPError:
+                    break
+                soup = BeautifulSoup(resp.text, "html.parser")
+                rows = soup.select("tr.table_row")
+                if not rows:
+                    break
+                all_rows.extend(rows)
+
+        return all_rows
 
 
 def _parse_row(row) -> dict | None:

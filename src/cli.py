@@ -282,6 +282,156 @@ def hunt(
     asyncio.run(_run())
 
 
+@app.command()
+def stats() -> None:
+    """Show DB statistics."""
+    from sqlalchemy import func, select
+    from src.leads.db import CompanyRow, DecisionMakerRow, LeadRow, get_session_maker, init_db
+
+    async def _run():
+        await init_db()
+        Session = get_session_maker()
+        async with Session() as session:
+            total_companies = (await session.execute(select(func.count(CompanyRow.id)))).scalar() or 0
+            total_dms = (await session.execute(select(func.count(DecisionMakerRow.id)))).scalar() or 0
+            total_leads = (await session.execute(select(func.count(LeadRow.id)))).scalar() or 0
+
+            # Companies with/without contacts
+            with_contacts = (await session.execute(
+                select(func.count(func.distinct(DecisionMakerRow.company_id)))
+            )).scalar() or 0
+
+            # By source
+            by_source = await session.execute(
+                select(CompanyRow.source, func.count(CompanyRow.id)).group_by(CompanyRow.source)
+            )
+
+            # By role
+            by_role = await session.execute(
+                select(DecisionMakerRow.role, func.count(DecisionMakerRow.id)).group_by(DecisionMakerRow.role)
+            )
+
+        table = Table(title="Database Stats")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Total companies", str(total_companies))
+        table.add_row("Total contacts", str(total_dms))
+        table.add_row("Total leads", str(total_leads))
+        table.add_row("Companies with contacts", f"{with_contacts} ({with_contacts * 100 // max(total_companies, 1)}%)")
+        console.print(table)
+
+        src_table = Table(title="By Source")
+        src_table.add_column("Source", style="cyan")
+        src_table.add_column("Count", style="green")
+        for source, count in by_source:
+            src_table.add_row(source or "unknown", str(count))
+        console.print(src_table)
+
+        role_table = Table(title="Contacts by Role")
+        role_table.add_column("Role", style="cyan")
+        role_table.add_column("Count", style="green")
+        for role, count in by_role:
+            role_table.add_row(role, str(count))
+        console.print(role_table)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def companies(
+    limit: int = typer.Option(50, help="Max rows"),
+    source: str | None = typer.Option(None, help="Filter by source"),
+) -> None:
+    """List all companies in DB."""
+    from sqlalchemy import select
+    from src.leads.db import CompanyRow, get_session_maker, init_db
+
+    async def _run():
+        await init_db()
+        Session = get_session_maker()
+        async with Session() as session:
+            stmt = select(CompanyRow).order_by(CompanyRow.last_seen_at.desc()).limit(limit)
+            if source:
+                stmt = stmt.where(CompanyRow.source == source)
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+        table = Table(title=f"Companies ({len(rows)})")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Name", style="cyan")
+        table.add_column("Source")
+        table.add_column("Location")
+        table.add_column("Tech")
+        table.add_column("Last seen", style="dim")
+
+        for i, r in enumerate(rows, 1):
+            table.add_row(
+                str(i), r.name, r.source or "-",
+                (r.location or "Remote")[:25],
+                (r.tech_stack or "")[:35],
+                r.last_seen_at.strftime("%Y-%m-%d"),
+            )
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def contacts(
+    limit: int = typer.Option(50, help="Max rows"),
+    role: str | None = typer.Option(None, help="Filter by role (ceo|cto|founder|...)"),
+    company: str | None = typer.Option(None, help="Filter by company name"),
+) -> None:
+    """List all decision makers in DB."""
+    from sqlalchemy import select
+    from src.leads.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
+
+    async def _run():
+        await init_db()
+        Session = get_session_maker()
+        async with Session() as session:
+            stmt = select(DecisionMakerRow, CompanyRow).join(CompanyRow).order_by(DecisionMakerRow.last_seen_at.desc()).limit(limit)
+            if role:
+                stmt = stmt.where(DecisionMakerRow.role == role)
+            if company:
+                stmt = stmt.where(CompanyRow.name.ilike(f"%{company}%"))
+            result = await session.execute(stmt)
+            rows = result.all()
+
+        table = Table(title=f"Contacts ({len(rows)})")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Name", style="cyan")
+        table.add_column("Role")
+        table.add_column("Company")
+        table.add_column("Email", style="green")
+        table.add_column("LinkedIn", style="dim")
+
+        for i, (dm, comp) in enumerate(rows, 1):
+            table.add_row(
+                str(i), dm.full_name,
+                (dm.title_raw or dm.role)[:30],
+                comp.name[:30],
+                (dm.email or "-")[:35],
+                (dm.linkedin_url or "-")[:40],
+            )
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@app.command("reset-db")
+def reset_db() -> None:
+    """Drop all tables and recreate (WIPES DATA)."""
+    import os
+    from src.leads.db import _DB_PATH
+    if os.path.exists(_DB_PATH):
+        os.remove(_DB_PATH)
+        console.print(f"[red]Deleted {_DB_PATH}[/]")
+    from src.leads.db import init_db
+    asyncio.run(init_db())
+    console.print("[green]Fresh DB initialized[/]")
+
+
 def _save_csv(filepath: str, rows: list[dict]) -> None:
     if not rows:
         console.print("[yellow]No data to save[/]")
