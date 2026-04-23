@@ -21,7 +21,15 @@ from src.shared import Email, LinkedInUrl, TechStack
 
 
 class SqliteLeadRepository(LeadRepository):
-    """Persists leads in SQLite. Deduplicates on re-scrape."""
+    """Persists leads in SQLite. Deduplicates on re-scrape.
+
+    Each save_many call creates leads under a given campaign.
+    Re-running same campaign on same person → same lead (updated).
+    Different campaign → new lead (so you can message them again).
+    """
+
+    def __init__(self, campaign: str = "default") -> None:
+        self._campaign = campaign
 
     async def save(self, lead: Lead) -> None:
         await self.save_many([lead])
@@ -45,15 +53,15 @@ class SqliteLeadRepository(LeadRepository):
                 if dm_row._is_new:
                     saved_dms += 1
 
-                lead_row = await _upsert_lead(session, company_row.id, dm_row.id, lead)
+                lead_row = await _upsert_lead(session, dm_row.id, lead, self._campaign)
                 if lead_row._is_new:
                     saved_leads += 1
 
             await session.commit()
 
         logger.info(
-            "DB saved: {} new companies, {} new contacts, {} new leads",
-            saved_companies, saved_dms, saved_leads,
+            "DB saved: {} new companies, {} new contacts, {} new leads (campaign='{}')",
+            saved_companies, saved_dms, saved_leads, self._campaign,
         )
 
     async def get_by_id(self, lead_id: UUID) -> Lead | None:
@@ -189,25 +197,30 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
     return row
 
 
-async def _upsert_lead(session, company_id: UUID, dm_id: UUID, lead: Lead) -> LeadRow:
+async def _upsert_lead(session, dm_id: UUID, lead: Lead, campaign: str) -> LeadRow:
+    """Upsert lead within a campaign. Re-running same campaign updates the existing lead.
+    To target the same person again, use a different campaign name."""
+    # Find existing lead for this dm + campaign with attempt_no = 1
+    # (future: increment attempt_no for re-attempts)
     result = await session.execute(
         select(LeadRow).where(
-            LeadRow.company_id == company_id,
             LeadRow.decision_maker_id == dm_id,
+            LeadRow.campaign == campaign,
+            LeadRow.attempt_no == 1,
         )
     )
     row = result.scalar_one_or_none()
 
     if row:
-        # update score if higher
         if lead.relevance_score > row.relevance_score:
             row.relevance_score = lead.relevance_score
         row.updated_at = datetime.utcnow()
         row._is_new = False
     else:
         row = LeadRow(
-            company_id=company_id,
             decision_maker_id=dm_id,
+            campaign=campaign,
+            attempt_no=1,
             relevance_score=lead.relevance_score,
             status=lead.status.value,
             notes=lead.notes,
@@ -220,11 +233,13 @@ async def _upsert_lead(session, company_id: UUID, dm_id: UUID, lead: Lead) -> Le
 
 
 async def _row_to_lead(session, row: LeadRow) -> Lead:
-    """Hydrate Lead domain object from ORM row."""
-    comp_result = await session.execute(select(CompanyRow).where(CompanyRow.id == row.company_id))
-    comp_row = comp_result.scalar_one()
+    """Hydrate Lead domain object from ORM row.
+    Company reachable via decision_maker.company_id (no company_id on lead anymore).
+    """
     dm_result = await session.execute(select(DecisionMakerRow).where(DecisionMakerRow.id == row.decision_maker_id))
     dm_row = dm_result.scalar_one()
+    comp_result = await session.execute(select(CompanyRow).where(CompanyRow.id == dm_row.company_id))
+    comp_row = comp_result.scalar_one()
 
     company = Company(
         name=comp_row.name,

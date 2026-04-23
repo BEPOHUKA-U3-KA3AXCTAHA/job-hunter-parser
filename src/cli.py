@@ -201,6 +201,7 @@ def hunt(
     salary_min: int | None = typer.Option(None, help="Min salary USD/year, e.g. 60000"),
     channel: str = typer.Option("linkedin", help="Message channel: linkedin | email | twitter"),
     output: str = typer.Option("leads_full.csv", "-o", help="Output CSV"),
+    campaign: str = typer.Option("default", help="Campaign name (use different for re-targeting same people)"),
     apollo_key: str | None = typer.Option(None, envvar="APOLLO_API_KEY", help="Apollo.io API key (paid plan)"),
     apify_key: str | None = typer.Option(None, envvar="APIFY_API_KEY", help="Apify API key"),
     anthropic_key: str | None = typer.Option(None, envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
@@ -277,6 +278,7 @@ def hunt(
             profile=profile,
             channel=ch,
             output_csv=output,
+            campaign=campaign,
         )
 
     asyncio.run(_run())
@@ -471,13 +473,17 @@ def stale(
 
 @app.command("reset-db")
 def reset_db() -> None:
-    """Drop all tables and recreate (WIPES DATA)."""
+    """Drop all tables and recreate (WIPES DATA, only for SQLite)."""
     import os
-    from src.leads.db import _DB_PATH
-    if os.path.exists(_DB_PATH):
-        os.remove(_DB_PATH)
-        console.print(f"[red]Deleted {_DB_PATH}[/]")
-    from src.leads.db import init_db
+    from src.leads.db import _get_database_url, init_db
+    url = _get_database_url()
+    if url.startswith("sqlite"):
+        path = url.split("///")[-1]
+        if os.path.exists(path):
+            os.remove(path)
+            console.print(f"[red]Deleted {path}[/]")
+    else:
+        console.print(f"[yellow]Non-SQLite DB ({url}). Drop tables manually.[/]")
     asyncio.run(init_db())
     console.print("[green]Fresh DB initialized[/]")
 

@@ -73,23 +73,36 @@ class DecisionMakerRow(Base):
 
 
 class LeadRow(Base):
+    """One outreach attempt per (decision_maker, campaign, attempt_no).
+
+    To message the same person multiple times: bump attempt_no or use a different campaign.
+    Company is reachable via decision_maker.company_id (no need to duplicate FK here).
+    """
     __tablename__ = "leads"
-    __table_args__ = (UniqueConstraint("company_id", "decision_maker_id", name="uq_lead_company_dm"),)
+    __table_args__ = (
+        UniqueConstraint("decision_maker_id", "campaign", "attempt_no", name="uq_lead_dm_campaign_attempt"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    company_id: Mapped[UUID] = mapped_column(ForeignKey("companies.id"), index=True)
     decision_maker_id: Mapped[UUID] = mapped_column(ForeignKey("decision_makers.id"), index=True)
+
+    # Campaign / attempt grouping - so we can message same person multiple times
+    campaign: Mapped[str] = mapped_column(String(50), default="default", index=True)
+    attempt_no: Mapped[int] = mapped_column(default=1)
 
     relevance_score: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(String(30), default="new")
     notes: Mapped[str] = mapped_column(String(2000), default="")
 
+    # Message
     generated_message: Mapped[str | None] = mapped_column(String(4000))
     generated_message_channel: Mapped[str | None] = mapped_column(String(20))
     message_generated_at: Mapped[datetime | None]
 
+    # Outreach tracking
     contacted_at: Mapped[datetime | None]
     replied_at: Mapped[datetime | None]
+    reply_text: Mapped[str | None] = mapped_column(String(4000))
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
