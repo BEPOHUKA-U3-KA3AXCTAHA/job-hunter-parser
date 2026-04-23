@@ -201,12 +201,14 @@ def hunt(
     salary_min: int | None = typer.Option(None, help="Min salary USD/year, e.g. 60000"),
     channel: str = typer.Option("linkedin", help="Message channel: linkedin | email | twitter"),
     output: str = typer.Option("leads_full.csv", "-o", help="Output CSV"),
-    apollo_key: str | None = typer.Option(None, envvar="APOLLO_API_KEY", help="Apollo.io API key"),
+    apollo_key: str | None = typer.Option(None, envvar="APOLLO_API_KEY", help="Apollo.io API key (paid plan)"),
+    apify_key: str | None = typer.Option(None, envvar="APIFY_API_KEY", help="Apify API key"),
     anthropic_key: str | None = typer.Option(None, envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
 ) -> None:
     """FULL PIPELINE: scrape all sources -> find contacts -> generate messages -> CSV.
 
-    This is the main command. One button does everything.
+    Contact sources tried in order: TheOrg (free) -> Apollo (paid) -> Apify (paid).
+    Whichever finds data first is used per company.
     """
     from src.outreach.models import OutreachChannel
     from src.pipeline import run_pipeline
@@ -220,7 +222,7 @@ def hunt(
         )
         profile = CandidateProfile()
 
-        # Build scrapers
+        # Job board scrapers
         sources = []
         for name in SOURCES:
             try:
@@ -228,33 +230,48 @@ def hunt(
             except Exception:
                 pass
 
-        # Build enrichment (optional)
-        dm_search = None
-        enrichment = None
+        # Decision maker sources (tried in order)
+        dm_searches = []
+        enrichments = []
+
+        # 1. TheOrg - always free, primary source
+        from src.people.adapters.theorg import TheOrgScraper
+        theorg = TheOrgScraper()
+        dm_searches.append(theorg)
+        enrichments.append(theorg)
+        console.print("[green]TheOrg adapter enabled (free)[/]")
+
+        # 2. Apollo - paid plan needed for API
         if apollo_key:
             from src.people.adapters.apollo import ApolloAdapter
-            adapter = ApolloAdapter(apollo_key)
-            dm_search = adapter
-            enrichment = adapter
-            console.print("[green]Apollo enrichment enabled[/]")
-        else:
-            console.print("[yellow]No APOLLO_API_KEY - skipping contact enrichment[/]")
+            apollo = ApolloAdapter(apollo_key)
+            dm_searches.append(apollo)
+            enrichments.append(apollo)
+            console.print("[green]Apollo adapter enabled (paid)[/]")
 
-        # Build LLM (optional)
+        # 3. Apify - $5-49 LinkedIn scraping
+        if apify_key:
+            from src.people.adapters.apify import ApifyAdapter
+            apify = ApifyAdapter(apify_key)
+            dm_searches.append(apify)
+            enrichments.append(apify)
+            console.print("[green]Apify adapter enabled (paid, ~$5/1k)[/]")
+
+        # LLM (optional)
         llm = None
         if anthropic_key:
             from src.outreach.llm import ClaudeLLMAdapter
             llm = ClaudeLLMAdapter(anthropic_key)
             console.print("[green]Claude message generation enabled[/]")
         else:
-            console.print("[yellow]No ANTHROPIC_API_KEY - skipping message generation[/]")
+            console.print("[yellow]No ANTHROPIC_API_KEY - messages will be empty[/]")
 
         ch = OutreachChannel(channel)
 
         await run_pipeline(
             sources=sources,
-            dm_search=dm_search,
-            enrichment=enrichment,
+            dm_searches=dm_searches,
+            enrichments=enrichments,
             llm=llm,
             criteria=criteria,
             profile=profile,

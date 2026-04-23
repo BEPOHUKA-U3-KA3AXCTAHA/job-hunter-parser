@@ -45,15 +45,18 @@ class PipelineResult:
 
 async def run_pipeline(
     sources: list[CompanySource],
-    dm_search: DecisionMakerSearch | None,
-    enrichment: ContactEnrichment | None,
+    dm_searches: list[DecisionMakerSearch],
+    enrichments: list[ContactEnrichment],
     llm: LLMGenerator | None,
     criteria: SearchCriteria,
     profile: CandidateProfile,
     channel: OutreachChannel = OutreachChannel.LINKEDIN,
     output_csv: str = "leads_full.csv",
 ) -> list[PipelineResult]:
-    """Runs the full pipeline and returns results."""
+    """Runs the full pipeline and returns results.
+
+    dm_searches and enrichments are lists - tried in order until one returns data.
+    """
 
     results: list[PipelineResult] = []
 
@@ -75,35 +78,46 @@ async def run_pipeline(
         console.print("[red]No companies found. Check your criteria.[/]")
         return results
 
-    # Step 2: Find decision makers (if Apollo/enrichment available)
+    # Step 2: Find decision makers - try each source in order
     console.print("\n[bold cyan]Step 2/4: Finding decision makers...[/]")
+    if dm_searches:
+        active_sources = ", ".join(s.source_name for s in dm_searches)
+        console.print(f"  Sources: [yellow]{active_sources}[/]")
+
     scorer = LeadScorer(TechStack.from_strings(*profile.tech_stack))
     leads: list[Lead] = []
 
     for company in companies:
-        if dm_search:
-            try:
-                async for dm in dm_search.find(company, DEFAULT_ROLES, limit=2):
-                    if enrichment and company.website:
-                        domain = company.website.replace("https://", "").replace("http://", "").split("/")[0]
-                        dm = await enrichment.enrich(dm, domain)
+        dms_for_company: list = []
 
-                    score = scorer.score(company, dm)
-                    lead = Lead(company=company, decision_maker=dm, relevance_score=score)
-                    leads.append(lead)
+        # Try each source until we find any decision makers
+        for dm_search in dm_searches:
+            try:
+                async for dm in dm_search.find(company, DEFAULT_ROLES, limit=3):
+                    # Try to enrich with each enrichment source
+                    for enr in enrichments:
+                        try:
+                            if company.website:
+                                domain = company.website.replace("https://", "").replace("http://", "").split("/")[0]
+                            else:
+                                domain = company.name.lower().replace(" ", "") + ".com"
+                            dm = await enr.enrich(dm, domain)
+                        except Exception as e:
+                            logger.debug("Enrichment {} failed: {}", enr.source_name, e)
+                    dms_for_company.append(dm)
             except Exception as e:
-                logger.warning("Enrichment failed for {}: {}", company.name, e)
-                leads.append(Lead(
-                    company=company,
-                    decision_maker=_empty_dm(company),
-                    relevance_score=scorer.score(company, _empty_dm(company)),
-                ))
-        else:
-            leads.append(Lead(
-                company=company,
-                decision_maker=_empty_dm(company),
-                relevance_score=0,
-            ))
+                logger.warning("DM search {} failed for {}: {}", dm_search.source_name, company.name, e)
+
+            if dms_for_company:
+                break  # found contacts, no need to try other sources
+
+        # If nothing found, add empty lead
+        if not dms_for_company:
+            dms_for_company = [_empty_dm(company)]
+
+        for dm in dms_for_company:
+            score = scorer.score(company, dm)
+            leads.append(Lead(company=company, decision_maker=dm, relevance_score=score))
 
     console.print(f"  [green]Built {len(leads)} leads[/]")
 
