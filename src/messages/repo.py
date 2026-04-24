@@ -227,7 +227,6 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
     row = result.scalar_one_or_none()
 
     tech_str = ", ".join(sorted(company.tech_stack.technologies))
-    now = datetime.utcnow()
 
     if row:
         row.website = company.website or row.website
@@ -236,7 +235,6 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
         row.location = company.location or row.location
         row.is_hiring = company.is_hiring or row.is_hiring
         row.source_url = company.source_url or row.source_url
-        row.last_scraped_at = now
         row._is_new = False
     else:
         row = CompanyRow(
@@ -249,8 +247,6 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
             is_hiring=company.is_hiring,
             source=company.source,
             source_url=company.source_url,
-            first_seen_at=now,
-            last_scraped_at=now,
         )
         session.add(row)
         await session.flush()
@@ -267,7 +263,6 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
         )
     )
     row = result.scalar_one_or_none()
-    now = datetime.utcnow()
 
     if row:
         row.title_raw = dm.title_raw or row.title_raw
@@ -284,7 +279,6 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
             title_raw=dm.title_raw,
             location=dm.location,
             contacts=dict(dm.contacts) if dm.contacts else {},
-            first_seen_at=now,
         )
         session.add(row)
         await session.flush()

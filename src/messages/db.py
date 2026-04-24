@@ -34,10 +34,9 @@ class CompanyRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500))
 
-    # Dates
-    first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_scraped_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time scraped from job board
-    last_dm_scan_at: Mapped[datetime | None]                                     # last time TheOrg/Apollo was hit for this company
+    # Only date that drives logic: when we last hit TheOrg/Apollo for this company's DMs.
+    # Used by freshness cache to skip re-enrichment within skip_fresh_days window.
+    last_dm_scan_at: Mapped[datetime | None]
 
     decision_makers: Mapped[list[DecisionMakerRow]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
@@ -67,9 +66,7 @@ class DecisionMakerRow(Base):
     #           "github": "ghuser", "website": "https://...", "phone": "+1..."}
     contacts: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    # Only first_seen_at kept on dm — freshness is tracked at company level via last_dm_scan_at.
-    first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-
+    # No dates on dm — freshness is tracked at company level via last_dm_scan_at.
     company: Mapped[CompanyRow] = relationship(back_populates="decision_makers")
     messages: Mapped[list[MessageRow]] = relationship(back_populates="decision_maker")
 
