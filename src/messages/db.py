@@ -169,10 +169,10 @@ async def init_db() -> None:
 
 
 def _sync_columns(sync_conn) -> None:
-    """ALTER TABLE ADD COLUMN for any model column not yet present in the DB.
+    """Diff model schema vs live DB schema. Add missing columns, drop extra ones.
 
-    Uses sqlalchemy.inspect to compare model schema vs live DB schema.
-    Only adds columns - never drops. Safe across all SQLite versions.
+    Uses sqlalchemy.inspect for the comparison.
+    SQLite 3.35+ supports both ADD COLUMN and DROP COLUMN without data loss.
     """
     from loguru import logger
     from sqlalchemy import inspect, text
@@ -181,14 +181,16 @@ def _sync_columns(sync_conn) -> None:
 
     for table_name, table in Base.metadata.tables.items():
         if not inspector.has_table(table_name):
-            continue  # create_all() already handled it
+            continue  # create_all() already built it
 
+        model_cols = {col.name: col for col in table.columns}
         existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
-        for col in table.columns:
-            if col.name in existing_cols:
+
+        # 1. ADD COLUMN for new fields in the model
+        for name, col in model_cols.items():
+            if name in existing_cols:
                 continue
 
-            # Build ALTER TABLE ADD COLUMN statement.
             col_type = col.type.compile(dialect=sync_conn.dialect)
             nullable = "" if col.nullable else " NOT NULL DEFAULT ''"
             default = ""
@@ -199,12 +201,23 @@ def _sync_columns(sync_conn) -> None:
                 elif isinstance(val, (int, float, bool)):
                     default = f" DEFAULT {int(val) if isinstance(val, bool) else val}"
 
-            stmt = f'ALTER TABLE {table_name} ADD COLUMN "{col.name}" {col_type}{default}{nullable}'
+            stmt = f'ALTER TABLE {table_name} ADD COLUMN "{name}" {col_type}{default}{nullable}'
             try:
                 sync_conn.execute(text(stmt))
-                logger.info("Auto-migration: added {}.{} ({})", table_name, col.name, col_type)
+                logger.info("Auto-migration: added {}.{} ({})", table_name, name, col_type)
             except Exception as e:
-                logger.warning("Auto-migration failed for {}.{}: {}", table_name, col.name, e)
+                logger.warning("Auto-migration ADD failed for {}.{}: {}", table_name, name, e)
+
+        # 2. DROP COLUMN for columns that are no longer in the model.
+        # SQLite refuses to drop a column if it's part of an index or PK -
+        # those will fail safely with a warning and be left in place.
+        for name in existing_cols - set(model_cols.keys()):
+            stmt = f'ALTER TABLE {table_name} DROP COLUMN "{name}"'
+            try:
+                sync_conn.execute(text(stmt))
+                logger.info("Auto-migration: dropped {}.{}", table_name, name)
+            except Exception as e:
+                logger.warning("Auto-migration DROP failed for {}.{}: {}", table_name, name, e)
 
 
 def describe_db() -> str:
