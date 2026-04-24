@@ -201,7 +201,6 @@ def hunt(
     salary_min: int | None = typer.Option(None, help="Min salary USD/year, e.g. 60000"),
     channel: str = typer.Option("linkedin", help="Message channel: linkedin | email | twitter"),
     output: str = typer.Option("leads_full.csv", "-o", help="Output CSV"),
-    campaign: str = typer.Option("default", help="Campaign name (use different for re-targeting same people)"),
     apollo_key: str | None = typer.Option(None, envvar="APOLLO_API_KEY", help="Apollo.io API key (paid plan)"),
     apify_key: str | None = typer.Option(None, envvar="APIFY_API_KEY", help="Apify API key"),
     anthropic_key: str | None = typer.Option(None, envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
@@ -278,7 +277,6 @@ def hunt(
             profile=profile,
             channel=ch,
             output_csv=output,
-            campaign=campaign,
         )
 
     asyncio.run(_run())
@@ -467,6 +465,43 @@ def stale(
             table.add_row(dm.full_name, dm.role, comp.name, f"{age} days ago")
         console.print(table)
         console.print(f"\nTotal stale: [red]{len(rows)}[/]")
+
+    asyncio.run(_run())
+
+
+@app.command()
+def retry(
+    status: str = typer.Option("no_reply", help="Retry leads with this status (no_reply | rejected | new)"),
+    limit: int = typer.Option(50, help="Max leads to retry"),
+) -> None:
+    """Create new attempts for leads that didn't get a reply.
+
+    Bumps attempt_no on each. Use after status=no_reply to re-target stale leads.
+    """
+    from sqlalchemy import select
+    from src.leads.db import LeadRow, get_session_maker, init_db
+    from src.leads.repo import SqliteLeadRepository
+
+    async def _run():
+        await init_db()
+        repo = SqliteLeadRepository()
+        Session = get_session_maker()
+        created = 0
+        async with Session() as session:
+            # Find existing leads with given status, only the latest attempt per dm
+            result = await session.execute(
+                select(LeadRow).where(LeadRow.status == status).limit(limit)
+            )
+            leads = result.scalars().all()
+            console.print(f"Found {len(leads)} leads with status='{status}'")
+
+            for old_lead in leads:
+                new_lead = await repo.create_retry(old_lead.decision_maker_id, score=old_lead.relevance_score)
+                if new_lead:
+                    created += 1
+                    console.print(f"  → new attempt #{new_lead.attempt_no} for dm {old_lead.decision_maker_id}")
+
+        console.print(f"\n[green]Created {created} retry leads[/]")
 
     asyncio.run(_run())
 

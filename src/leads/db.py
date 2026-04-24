@@ -73,21 +73,18 @@ class DecisionMakerRow(Base):
 
 
 class LeadRow(Base):
-    """One outreach attempt per (decision_maker, campaign, attempt_no).
+    """One outreach attempt per (decision_maker, attempt_no).
 
-    To message the same person multiple times: bump attempt_no or use a different campaign.
-    Company is reachable via decision_maker.company_id (no need to duplicate FK here).
+    To message the same person again: bump attempt_no (use `jhp retry` command).
+    Company is reachable via decision_maker.company_id.
     """
     __tablename__ = "leads"
     __table_args__ = (
-        UniqueConstraint("decision_maker_id", "campaign", "attempt_no", name="uq_lead_dm_campaign_attempt"),
+        UniqueConstraint("decision_maker_id", "attempt_no", name="uq_lead_dm_attempt"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     decision_maker_id: Mapped[UUID] = mapped_column(ForeignKey("decision_makers.id"), index=True)
-
-    # Campaign / attempt grouping - so we can message same person multiple times
-    campaign: Mapped[str] = mapped_column(String(50), default="default", index=True)
     attempt_no: Mapped[int] = mapped_column(default=1)
 
     relevance_score: Mapped[int] = mapped_column(default=0)

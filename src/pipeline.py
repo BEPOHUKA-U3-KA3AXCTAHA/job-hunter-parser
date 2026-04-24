@@ -52,7 +52,6 @@ async def run_pipeline(
     profile: CandidateProfile,
     channel: OutreachChannel = OutreachChannel.LINKEDIN,
     output_csv: str = "leads_full.csv",
-    campaign: str = "default",
 ) -> list[PipelineResult]:
     """Runs the full pipeline and returns results.
 
@@ -155,11 +154,11 @@ async def run_pipeline(
         from src.leads.db import init_db
         from src.leads.repo import SqliteLeadRepository
         await init_db()
-        repo = SqliteLeadRepository(campaign=campaign)
+        repo = SqliteLeadRepository()
         real_leads = [l for l in leads if l.decision_maker.full_name != "Unknown (find manually)"]
         await repo.save_many(real_leads)
         total_in_db = await repo.count()
-        console.print(f"  [green]DB now has {total_in_db} total leads (campaign='{campaign}')[/]")
+        console.print(f"  [green]DB now has {total_in_db} total leads[/]")
     except Exception as e:
         console.print(f"  [red]DB save failed: {e}[/]")
 

@@ -23,13 +23,9 @@ from src.shared import Email, LinkedInUrl, TechStack
 class SqliteLeadRepository(LeadRepository):
     """Persists leads in SQLite. Deduplicates on re-scrape.
 
-    Each save_many call creates leads under a given campaign.
-    Re-running same campaign on same person → same lead (updated).
-    Different campaign → new lead (so you can message them again).
+    Hunt always creates/updates attempt_no=1.
+    To re-target someone, use a separate `retry` command which bumps attempt_no.
     """
-
-    def __init__(self, campaign: str = "default") -> None:
-        self._campaign = campaign
 
     async def save(self, lead: Lead) -> None:
         await self.save_many([lead])
@@ -53,16 +49,37 @@ class SqliteLeadRepository(LeadRepository):
                 if dm_row._is_new:
                     saved_dms += 1
 
-                lead_row = await _upsert_lead(session, dm_row.id, lead, self._campaign)
+                lead_row = await _upsert_lead(session, dm_row.id, lead)
                 if lead_row._is_new:
                     saved_leads += 1
 
             await session.commit()
 
         logger.info(
-            "DB saved: {} new companies, {} new contacts, {} new leads (campaign='{}')",
-            saved_companies, saved_dms, saved_leads, self._campaign,
+            "DB saved: {} new companies, {} new contacts, {} new leads",
+            saved_companies, saved_dms, saved_leads,
         )
+
+    async def create_retry(self, dm_id: UUID, score: int = 0) -> LeadRow | None:
+        """Create a new attempt for an existing dm. attempt_no = max+1."""
+        Session = get_session_maker()
+        async with Session() as session:
+            result = await session.execute(
+                select(LeadRow).where(LeadRow.decision_maker_id == dm_id).order_by(LeadRow.attempt_no.desc())
+            )
+            existing = result.scalars().first()
+            if existing is None:
+                return None
+            new_attempt = existing.attempt_no + 1
+            row = LeadRow(
+                decision_maker_id=dm_id,
+                attempt_no=new_attempt,
+                relevance_score=score or existing.relevance_score,
+                status="new",
+            )
+            session.add(row)
+            await session.commit()
+            return row
 
     async def get_by_id(self, lead_id: UUID) -> Lead | None:
         Session = get_session_maker()
@@ -197,15 +214,12 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
     return row
 
 
-async def _upsert_lead(session, dm_id: UUID, lead: Lead, campaign: str) -> LeadRow:
-    """Upsert lead within a campaign. Re-running same campaign updates the existing lead.
-    To target the same person again, use a different campaign name."""
-    # Find existing lead for this dm + campaign with attempt_no = 1
-    # (future: increment attempt_no for re-attempts)
+async def _upsert_lead(session, dm_id: UUID, lead: Lead) -> LeadRow:
+    """Upsert lead at attempt_no=1. Hunt only ever touches attempt 1.
+    For re-targets, use repo.create_retry() which bumps attempt_no."""
     result = await session.execute(
         select(LeadRow).where(
             LeadRow.decision_maker_id == dm_id,
-            LeadRow.campaign == campaign,
             LeadRow.attempt_no == 1,
         )
     )
@@ -219,7 +233,6 @@ async def _upsert_lead(session, dm_id: UUID, lead: Lead, campaign: str) -> LeadR
     else:
         row = LeadRow(
             decision_maker_id=dm_id,
-            campaign=campaign,
             attempt_no=1,
             relevance_score=lead.relevance_score,
             status=lead.status.value,
