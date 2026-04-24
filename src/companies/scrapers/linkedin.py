@@ -56,11 +56,12 @@ class LinkedInScraper(CompanySource):
                 continue
 
             yield JobPosting(
-                company_id=0,
                 title=p["title"],
+                company_name=p.get("company", ""),
                 seniority=Seniority.from_text(p["title"]),
                 is_remote="remote" in p.get("location", "").lower(),
                 location=p["location"],
+                source="linkedin",
                 source_url=p["link"],
             )
 

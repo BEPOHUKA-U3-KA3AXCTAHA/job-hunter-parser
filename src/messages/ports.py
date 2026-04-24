@@ -40,6 +40,11 @@ class MessageRepository(ABC):
         """Return cached contacts if last_verified_at is within N days. None if stale/missing."""
         ...
 
+    @abstractmethod
+    async def save_job_postings(self, postings: list, company_name_to_id: dict) -> int:
+        """Persist job postings. Dedup by source_url. Returns new count."""
+        ...
+
 
 class LLMGenerator(ABC):
     """Port for LLM-based personalized message body generation."""

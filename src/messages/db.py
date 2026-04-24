@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -53,11 +53,13 @@ class DecisionMakerRow(Base):
     full_name: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(50))
     title_raw: Mapped[str | None] = mapped_column(String(300))
-    email: Mapped[str | None] = mapped_column(String(200))
-    linkedin_url: Mapped[str | None] = mapped_column(String(500))
-    twitter_handle: Mapped[str | None] = mapped_column(String(100))
     location: Mapped[str | None] = mapped_column(String(200))
     source: Mapped[str | None] = mapped_column(String(50))
+
+    # All contact channels in one JSON field. Easily extensible without schema migrations.
+    # Example: {"email": "x@y.com", "linkedin": "https://...", "twitter": "@handle",
+    #           "github": "ghuser", "website": "https://...", "phone": "+1..."}
+    contacts: Mapped[dict] = mapped_column(JSON, default=dict)
 
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time source confirmed them

@@ -32,8 +32,9 @@ class Company:
 
 @dataclass(slots=True)
 class JobPosting:
-    company_id: UUID
     title: str
+    company_id: UUID | None = None             # filled later when company is persisted
+    company_name: str = ""                      # source-provided company name (for joining later)
     description: str | None = None
     tech_stack: TechStack = field(default_factory=TechStack)
     seniority: Seniority = Seniority.UNKNOWN
@@ -42,6 +43,7 @@ class JobPosting:
     salary_min: int | None = None
     salary_max: int | None = None
     salary_currency: str | None = None
+    source: str | None = None                   # "web3.career" / "linkedin" / etc
     source_url: str | None = None
 
     id: UUID = field(default_factory=uuid4)

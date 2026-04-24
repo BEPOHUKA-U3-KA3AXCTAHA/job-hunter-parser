@@ -54,12 +54,13 @@ class RustJobsScraper(CompanySource):
 
             tags = p.get("tags", [])
             yield JobPosting(
-                company_id=0,
                 title=p["title"],
+                company_name=p.get("company", ""),
                 tech_stack=TechStack(frozenset(t.lower() for t in tags)),
                 seniority=Seniority.from_text(p["title"]),
                 is_remote=True,
                 location=p.get("location"),
+                source="rustjobs",
                 source_url=p.get("link"),
             )
             count += 1

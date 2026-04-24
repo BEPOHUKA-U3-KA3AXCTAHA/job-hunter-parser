@@ -81,8 +81,8 @@ class Web3CareerScraper(CompanySource):
                 continue
 
             yield JobPosting(
-                company_id=0,
                 title=parsed["title"],
+                company_name=parsed["company"] or "",
                 tech_stack=TechStack(frozenset(parsed["tags"])),
                 seniority=Seniority.from_text(parsed["title"]),
                 is_remote="remote" in parsed.get("location", "").lower(),
@@ -90,6 +90,7 @@ class Web3CareerScraper(CompanySource):
                 salary_min=parsed["salary_min"],
                 salary_max=parsed["salary_max"],
                 salary_currency="USD" if parsed["salary_min"] else None,
+                source="web3.career",
                 source_url=f"{_BASE_URL}{parsed['link']}" if parsed["link"] else None,
             )
             count += 1

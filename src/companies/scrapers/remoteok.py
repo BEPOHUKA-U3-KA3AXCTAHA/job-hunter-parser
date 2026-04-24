@@ -72,8 +72,8 @@ class RemoteOKScraper(CompanySource):
                 continue
 
             yield JobPosting(
-                company_id=job.get("id", 0),
                 title=title,
+                company_name=job.get("company", ""),
                 description=job.get("description"),
                 tech_stack=TechStack(frozenset(tags)),
                 seniority=Seniority.from_text(title),
@@ -82,6 +82,7 @@ class RemoteOKScraper(CompanySource):
                 salary_min=salary_min,
                 salary_max=_parse_salary(job.get("salary_max")),
                 salary_currency="USD" if salary_min else None,
+                source="remoteok",
                 source_url=job.get("url"),
             )
             count += 1

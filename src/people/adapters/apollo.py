@@ -13,7 +13,6 @@ from loguru import logger
 from src.companies.models import Company
 from src.people.models import DecisionMaker, DecisionMakerRole
 from src.people.ports import ContactEnrichment, DecisionMakerSearch
-from src.shared import Email, LinkedInUrl
 
 _API_BASE = "https://api.apollo.io/api/v1"
 
@@ -77,32 +76,23 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
 
         for person in people:
             role = _detect_role(person.get("title", ""))
-            email_str = person.get("email")
-            linkedin_str = person.get("linkedin_url")
-
-            email = None
-            if email_str:
-                try:
-                    email = Email(email_str)
-                except ValueError:
-                    pass
-
-            linkedin = None
-            if linkedin_str:
-                try:
-                    linkedin = LinkedInUrl(linkedin_str)
-                except ValueError:
-                    pass
+            contacts: dict = {}
+            if person.get("email"):
+                contacts["email"] = person["email"]
+            if person.get("linkedin_url"):
+                contacts["linkedin"] = person["linkedin_url"]
+            if person.get("twitter_url"):
+                contacts["twitter"] = person["twitter_url"]
+            if person.get("github_url"):
+                contacts["github"] = person["github_url"]
 
             yield DecisionMaker(
                 full_name=f"{person.get('first_name', '')} {person.get('last_name', '')}".strip(),
                 role=role,
                 company_id=company.id,
                 title_raw=person.get("title"),
-                email=email,
-                linkedin_url=linkedin,
-                twitter_handle=person.get("twitter_url"),
                 location=person.get("city"),
+                contacts=contacts,
             )
 
     async def enrich(self, decision_maker: DecisionMaker, company_domain: str) -> DecisionMaker:
@@ -130,17 +120,14 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
         if not person:
             return decision_maker
 
-        if not decision_maker.email and person.get("email"):
-            try:
-                decision_maker.email = Email(person["email"])
-            except ValueError:
-                pass
-
-        if not decision_maker.linkedin_url and person.get("linkedin_url"):
-            try:
-                decision_maker.linkedin_url = LinkedInUrl(person["linkedin_url"])
-            except ValueError:
-                pass
+        if "email" not in decision_maker.contacts and person.get("email"):
+            decision_maker.contacts["email"] = person["email"]
+        if "linkedin" not in decision_maker.contacts and person.get("linkedin_url"):
+            decision_maker.contacts["linkedin"] = person["linkedin_url"]
+        if "twitter" not in decision_maker.contacts and person.get("twitter_url"):
+            decision_maker.contacts["twitter"] = person["twitter_url"]
+        if "github" not in decision_maker.contacts and person.get("github_url"):
+            decision_maker.contacts["github"] = person["github_url"]
 
         return decision_maker
 

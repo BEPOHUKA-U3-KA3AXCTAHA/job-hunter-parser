@@ -10,7 +10,7 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
-from src.companies.models import Company
+from src.companies.models import Company, JobPosting
 from src.companies.ports import CompanySource
 from src.messages.models import Message, MessageChannel, MessageStatus
 from src.messages.ports import LLMGenerator, MessageRepository
@@ -61,19 +61,22 @@ async def run_pipeline(
     """
     results: list[PipelineResult] = []
 
-    # Step 1: Scrape companies from all sources
-    console.print("\n[bold cyan]Step 1/4: Scraping companies...[/]")
+    # Step 1: Scrape companies + job postings from all sources
+    console.print("\n[bold cyan]Step 1/4: Scraping companies + jobs...[/]")
     companies: list[Company] = []
+    job_postings: list[JobPosting] = []
 
     for source in sources:
         try:
             console.print(f"  Scraping [yellow]{source.source_name}[/]...")
             async for company in source.fetch_companies(criteria):
                 companies.append(company)
+            async for jp in source.fetch_job_postings(criteria):
+                job_postings.append(jp)
         except Exception as e:
             console.print(f"  [red]Error in {source.source_name}:[/] {e}")
 
-    console.print(f"  [green]Found {len(companies)} companies total[/]")
+    console.print(f"  [green]Found {len(companies)} companies, {len(job_postings)} jobs[/]")
 
     if not companies:
         console.print("[red]No companies found. Check your criteria.[/]")
@@ -159,10 +162,47 @@ async def run_pipeline(
     if repo:
         console.print("\n[bold cyan]Saving to DB...[/]")
         try:
-            real_messages = [m for m in messages if m.decision_maker.full_name != "Unknown (find manually)"]
+            # Only persist messages whose body has been generated.
+            # Bodyless messages = just an enrichment record on the contact, kept in CSV but not in DB.
+            real_messages = [
+                m for m in messages
+                if m.decision_maker.full_name != "Unknown (find manually)" and m.body
+            ]
             await repo.save_many(real_messages)
-            total_in_db = await repo.count()
-            console.print(f"  [green]DB now has {total_in_db} total messages[/]")
+
+            # Persist companies+contacts even when no body (so jobs can FK to them).
+            # save_many already upserts companies + dms via the messages we just wrote.
+            # For companies that produced no body (no LLM key), persist their dms separately.
+            bodyless = [
+                m for m in messages
+                if m.decision_maker.full_name != "Unknown (find manually)" and not m.body
+            ]
+            if bodyless:
+                # Hack: temporarily set a sentinel body so the upsert path runs, then restore.
+                # Simpler: just persist via a contact-only path. We'll write directly.
+                from src.messages.repo import _upsert_company, _upsert_decision_maker
+                from src.messages.db import get_session_maker
+                Session = get_session_maker()
+                async with Session() as session:
+                    for m in bodyless:
+                        comp_row = await _upsert_company(session, m.company)
+                        await _upsert_decision_maker(session, comp_row, m.decision_maker)
+                    await session.commit()
+
+            # Persist job postings, linked back to companies by name
+            from src.messages.db import CompanyRow, get_session_maker
+            from sqlalchemy import select
+            Session = get_session_maker()
+            async with Session() as session:
+                names = {c.name for c in companies}
+                result = await session.execute(select(CompanyRow).where(CompanyRow.name.in_(names)))
+                name_to_id = {r.name: r.id for r in result.scalars()}
+            new_jobs = await repo.save_job_postings(job_postings, name_to_id)
+
+            total_messages = await repo.count()
+            console.print(
+                f"  [green]DB: {total_messages} messages, +{new_jobs} new jobs[/]"
+            )
         except Exception as e:
             console.print(f"  [red]DB save failed: {e}[/]")
 

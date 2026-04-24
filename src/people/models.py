@@ -38,25 +38,56 @@ class DecisionMakerRole(StrEnum):
 
 @dataclass(slots=True)
 class DecisionMaker:
+    """A decision maker. Contacts (email/linkedin/twitter/github/etc) live in
+    a single dict for extensibility — easy to add new channels without schema migrations.
+    """
     full_name: str
     role: DecisionMakerRole
     company_id: UUID
     title_raw: str | None = None
-    email: Email | None = None
-    linkedin_url: LinkedInUrl | None = None
-    twitter_handle: str | None = None
     location: str | None = None
+
+    # All contact channels in one bag. Known keys (any may be missing):
+    #   email, linkedin, twitter, github, website, telegram, phone
+    contacts: dict[str, str] = field(default_factory=dict)
 
     id: UUID = field(default_factory=uuid4)
 
+    # --- Convenience accessors (validated wrappers) ---
+
+    @property
+    def email(self) -> Email | None:
+        v = self.contacts.get("email")
+        if not v:
+            return None
+        try:
+            return Email(v)
+        except ValueError:
+            return None
+
+    @property
+    def linkedin_url(self) -> LinkedInUrl | None:
+        v = self.contacts.get("linkedin")
+        if not v:
+            return None
+        try:
+            return LinkedInUrl(v)
+        except ValueError:
+            return None
+
+    @property
+    def twitter_handle(self) -> str | None:
+        return self.contacts.get("twitter")
+
+    @property
+    def github_handle(self) -> str | None:
+        return self.contacts.get("github")
+
     def has_any_contact(self) -> bool:
-        return any([self.email, self.linkedin_url, self.twitter_handle])
+        return bool(self.contacts)
 
     def best_channel(self) -> str | None:
-        if self.linkedin_url:
-            return "linkedin"
-        if self.email:
-            return "email"
-        if self.twitter_handle:
-            return "twitter"
+        for ch in ("linkedin", "email", "twitter", "telegram", "github"):
+            if ch in self.contacts:
+                return ch
         return None

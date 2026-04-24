@@ -23,7 +23,7 @@ from src.messages.db import (
 from src.messages.models import Message, MessageChannel, MessageStatus
 from src.messages.ports import MessageRepository
 from src.people.models import DecisionMaker, DecisionMakerRole
-from src.shared import Email, LinkedInUrl, TechStack
+from src.shared import TechStack
 
 
 class SqliteMessageRepository(MessageRepository):
@@ -162,6 +162,51 @@ class SqliteMessageRepository(MessageRepository):
             result = await session.execute(select(func.count(MessageRow.id)))
             return result.scalar() or 0
 
+    async def save_job_postings(self, postings: list, company_name_to_id: dict) -> int:
+        """Persist job postings, dedup by source_url. Returns count of new rows."""
+        if not postings:
+            return 0
+        from datetime import datetime
+        Session = get_session_maker()
+        new_count = 0
+        async with Session() as session:
+            for jp in postings:
+                if not jp.source_url:
+                    continue
+                result = await session.execute(
+                    select(JobPostingRow).where(JobPostingRow.source_url == jp.source_url)
+                )
+                row = result.scalar_one_or_none()
+                now = datetime.utcnow()
+                tech_str = ", ".join(sorted(jp.tech_stack.technologies)) if jp.tech_stack.technologies else None
+                company_id = company_name_to_id.get(jp.company_name) if hasattr(jp, "company_name") else None
+
+                if row:
+                    row.last_seen_at = now
+                    row.is_active = True
+                else:
+                    row = JobPostingRow(
+                        company_id=company_id,
+                        title=jp.title,
+                        description=jp.description,
+                        tech_stack=tech_str,
+                        seniority=jp.seniority.value if jp.seniority else None,
+                        is_remote=jp.is_remote,
+                        location=jp.location,
+                        salary_min=jp.salary_min,
+                        salary_max=jp.salary_max,
+                        salary_currency=jp.salary_currency,
+                        source=jp.source if hasattr(jp, "source") else None,
+                        source_url=jp.source_url,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        is_active=True,
+                    )
+                    session.add(row)
+                    new_count += 1
+            await session.commit()
+        return new_count
+
 
 # --- helpers ---
 
@@ -217,9 +262,10 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
 
     if row:
         row.title_raw = dm.title_raw or row.title_raw
-        row.email = (str(dm.email) if dm.email else None) or row.email
-        row.linkedin_url = (str(dm.linkedin_url) if dm.linkedin_url else None) or row.linkedin_url
-        row.twitter_handle = dm.twitter_handle or row.twitter_handle
+        # merge contacts: new dict over old (new wins where present)
+        merged = dict(row.contacts or {})
+        merged.update(dm.contacts or {})
+        row.contacts = merged
         row.last_seen_at = now
         row._is_new = False
     else:
@@ -228,10 +274,8 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
             full_name=dm.full_name,
             role=dm.role.value,
             title_raw=dm.title_raw,
-            email=str(dm.email) if dm.email else None,
-            linkedin_url=str(dm.linkedin_url) if dm.linkedin_url else None,
-            twitter_handle=dm.twitter_handle,
             location=dm.location,
+            contacts=dict(dm.contacts) if dm.contacts else {},
             first_seen_at=now,
             last_seen_at=now,
         )
@@ -281,18 +325,6 @@ async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
 
 
 def _dm_row_to_domain(dm_row: DecisionMakerRow) -> DecisionMaker:
-    email = None
-    if dm_row.email:
-        try:
-            email = Email(dm_row.email)
-        except ValueError:
-            pass
-    linkedin = None
-    if dm_row.linkedin_url:
-        try:
-            linkedin = LinkedInUrl(dm_row.linkedin_url)
-        except ValueError:
-            pass
     try:
         role = DecisionMakerRole(dm_row.role)
     except ValueError:
@@ -303,10 +335,8 @@ def _dm_row_to_domain(dm_row: DecisionMakerRow) -> DecisionMaker:
         role=role,
         company_id=dm_row.company_id,
         title_raw=dm_row.title_raw,
-        email=email,
-        linkedin_url=linkedin,
-        twitter_handle=dm_row.twitter_handle,
         location=dm_row.location,
+        contacts=dict(dm_row.contacts) if dm_row.contacts else {},
     )
 
 
