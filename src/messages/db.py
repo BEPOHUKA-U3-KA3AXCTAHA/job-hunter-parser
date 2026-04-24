@@ -157,8 +157,54 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
+    """Create tables if missing, then auto-migrate any newly added columns.
+
+    Lets us evolve models in place without losing data - no reset-db needed for
+    additive changes. Removed columns simply become dead columns in the DB
+    (SQLite has no DROP COLUMN before 3.35; we don't bother).
+    """
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_sync_columns)
+
+
+def _sync_columns(sync_conn) -> None:
+    """ALTER TABLE ADD COLUMN for any model column not yet present in the DB.
+
+    Uses sqlalchemy.inspect to compare model schema vs live DB schema.
+    Only adds columns - never drops. Safe across all SQLite versions.
+    """
+    from loguru import logger
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+
+    for table_name, table in Base.metadata.tables.items():
+        if not inspector.has_table(table_name):
+            continue  # create_all() already handled it
+
+        existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+        for col in table.columns:
+            if col.name in existing_cols:
+                continue
+
+            # Build ALTER TABLE ADD COLUMN statement.
+            col_type = col.type.compile(dialect=sync_conn.dialect)
+            nullable = "" if col.nullable else " NOT NULL DEFAULT ''"
+            default = ""
+            if col.default is not None and col.default.is_scalar:
+                val = col.default.arg
+                if isinstance(val, str):
+                    default = f" DEFAULT '{val}'"
+                elif isinstance(val, (int, float, bool)):
+                    default = f" DEFAULT {int(val) if isinstance(val, bool) else val}"
+
+            stmt = f'ALTER TABLE {table_name} ADD COLUMN "{col.name}" {col_type}{default}{nullable}'
+            try:
+                sync_conn.execute(text(stmt))
+                logger.info("Auto-migration: added {}.{} ({})", table_name, col.name, col_type)
+            except Exception as e:
+                logger.warning("Auto-migration failed for {}.{}: {}", table_name, col.name, e)
 
 
 def describe_db() -> str:
