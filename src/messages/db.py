@@ -34,13 +34,19 @@ class CompanyRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500))
 
+    # Dates
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_hiring_verified_at: Mapped[datetime | None]
+    last_scraped_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time scraped from job board
+    last_dm_scan_at: Mapped[datetime | None]                                     # last time TheOrg/Apollo was hit for this company
 
     decision_makers: Mapped[list[DecisionMakerRow]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+
+    def is_dm_data_fresh(self, max_age_days: int = 30) -> bool:
+        if self.last_dm_scan_at is None:
+            return False
+        return (datetime.utcnow() - self.last_dm_scan_at) < timedelta(days=max_age_days)
 
 
 class DecisionMakerRow(Base):
@@ -61,14 +67,11 @@ class DecisionMakerRow(Base):
     #           "github": "ghuser", "website": "https://...", "phone": "+1..."}
     contacts: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # Only first_seen_at kept on dm — freshness is tracked at company level via last_dm_scan_at.
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time source confirmed them
 
     company: Mapped[CompanyRow] = relationship(back_populates="decision_makers")
     messages: Mapped[list[MessageRow]] = relationship(back_populates="decision_maker")
-
-    def is_fresh(self, max_age_days: int = 30) -> bool:
-        return (datetime.utcnow() - self.last_seen_at) < timedelta(days=max_age_days)
 
 
 class MessageRow(Base):

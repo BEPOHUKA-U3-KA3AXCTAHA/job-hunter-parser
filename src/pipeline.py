@@ -92,6 +92,7 @@ async def run_pipeline(
     messages: list[Message] = []
     cache_hits = 0
     cache_misses = 0
+    dm_scanned_company_names: set[str] = set()  # to mark in DB after companies are persisted
 
     for company in companies:
         dms_for_company: list = []
@@ -104,7 +105,7 @@ async def run_pipeline(
                 cache_hits += 1
                 logger.debug("Cache hit for {}: {} contacts", company.name, len(cached))
 
-        # Cache miss — fetch from sources
+        # Cache miss — fetch from sources, then mark company.last_dm_scan_at
         if not dms_for_company:
             cache_misses += 1
             for dm_search in dm_searches:
@@ -125,6 +126,9 @@ async def run_pipeline(
 
                 if dms_for_company:
                     break
+
+            # Remember to mark this company as scanned after companies are persisted to DB
+            dm_scanned_company_names.add(company.name)
 
         if not dms_for_company:
             dms_for_company = [_empty_dm(company)]
@@ -199,9 +203,16 @@ async def run_pipeline(
                 name_to_id = {r.name: r.id for r in result.scalars()}
             new_jobs = await repo.save_job_postings(job_postings, name_to_id)
 
+            # Mark companies whose DM scan happened this run, so freshness cache works next run
+            for n in dm_scanned_company_names:
+                try:
+                    await repo.mark_dm_scan_done(n)
+                except Exception as e:
+                    logger.debug("mark_dm_scan_done failed for {}: {}", n, e)
+
             total_messages = await repo.count()
             console.print(
-                f"  [green]DB: {total_messages} messages, +{new_jobs} new jobs[/]"
+                f"  [green]DB: {total_messages} messages, +{new_jobs} new jobs, marked {len(dm_scanned_company_names)} companies as dm-scanned[/]"
             )
         except Exception as e:
             console.print(f"  [red]DB save failed: {e}[/]")

@@ -89,9 +89,10 @@ class SqliteMessageRepository(MessageRepository):
     async def get_fresh_contacts(
         self, company_name: str, max_age_days: int
     ) -> list[DecisionMaker] | None:
-        """Return cached contacts if their last_seen_at is within N days.
-        Returns None if company not in DB, or if all its contacts are stale.
-        Lets pipeline skip re-scraping TheOrg/Apollo on subsequent runs.
+        """Return cached contacts if the company's last_dm_scan_at is within N days.
+        Returns None if company not in DB, never scanned, or scan is stale.
+        Freshness tracked at company level (not per-dm) — we either scanned the whole
+        company recently or we didn't.
         """
         if max_age_days <= 0:
             return None
@@ -103,20 +104,31 @@ class SqliteMessageRepository(MessageRepository):
                 select(CompanyRow).where(CompanyRow.name == company_name)
             )
             comp_row = comp_result.scalar_one_or_none()
-            if comp_row is None:
+            if comp_row is None or comp_row.last_dm_scan_at is None:
+                return None
+            if comp_row.last_dm_scan_at < cutoff:
                 return None
 
             dm_result = await session.execute(
-                select(DecisionMakerRow).where(
-                    DecisionMakerRow.company_id == comp_row.id,
-                    DecisionMakerRow.last_seen_at >= cutoff,
-                )
+                select(DecisionMakerRow).where(DecisionMakerRow.company_id == comp_row.id)
             )
             dm_rows = dm_result.scalars().all()
             if not dm_rows:
                 return None
 
             return [_dm_row_to_domain(r) for r in dm_rows]
+
+    async def mark_dm_scan_done(self, company_name: str) -> None:
+        """Update company.last_dm_scan_at = now after a successful TheOrg/Apollo scan."""
+        Session = get_session_maker()
+        async with Session() as session:
+            result = await session.execute(
+                select(CompanyRow).where(CompanyRow.name == company_name)
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                row.last_dm_scan_at = datetime.utcnow()
+                await session.commit()
 
     async def get_by_id(self, message_id: UUID) -> Message | None:
         Session = get_session_maker()
@@ -224,9 +236,7 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
         row.location = company.location or row.location
         row.is_hiring = company.is_hiring or row.is_hiring
         row.source_url = company.source_url or row.source_url
-        row.last_seen_at = now
-        if company.is_hiring:
-            row.last_hiring_verified_at = now
+        row.last_scraped_at = now
         row._is_new = False
     else:
         row = CompanyRow(
@@ -240,8 +250,7 @@ async def _upsert_company(session, company: Company) -> CompanyRow:
             source=company.source,
             source_url=company.source_url,
             first_seen_at=now,
-            last_seen_at=now,
-            last_hiring_verified_at=now if company.is_hiring else None,
+            last_scraped_at=now,
         )
         session.add(row)
         await session.flush()
@@ -266,7 +275,6 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
         merged = dict(row.contacts or {})
         merged.update(dm.contacts or {})
         row.contacts = merged
-        row.last_seen_at = now
         row._is_new = False
     else:
         row = DecisionMakerRow(
@@ -277,7 +285,6 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
             location=dm.location,
             contacts=dict(dm.contacts) if dm.contacts else {},
             first_seen_at=now,
-            last_seen_at=now,
         )
         session.add(row)
         await session.flush()

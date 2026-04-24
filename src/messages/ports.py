@@ -45,6 +45,11 @@ class MessageRepository(ABC):
         """Persist job postings. Dedup by source_url. Returns new count."""
         ...
 
+    @abstractmethod
+    async def mark_dm_scan_done(self, company_name: str) -> None:
+        """Set company.last_dm_scan_at = now after we attempted dm enrichment for it."""
+        ...
+
 
 class LLMGenerator(ABC):
     """Port for LLM-based personalized message body generation."""
