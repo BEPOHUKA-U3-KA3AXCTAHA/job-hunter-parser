@@ -34,10 +34,9 @@ class CompanyRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500))
 
-    # Dating
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_hiring_verified_at: Mapped[datetime | None]  # last time we saw them posting jobs
+    last_hiring_verified_at: Mapped[datetime | None]
 
     decision_makers: Mapped[list[DecisionMakerRow]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
@@ -60,27 +59,26 @@ class DecisionMakerRow(Base):
     location: Mapped[str | None] = mapped_column(String(200))
     source: Mapped[str | None] = mapped_column(String(50))
 
-    # Dating - when was this contact last verified as current
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_verified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time source confirmed them
+    last_verified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
     company: Mapped[CompanyRow] = relationship(back_populates="decision_makers")
-    leads: Mapped[list[LeadRow]] = relationship(back_populates="decision_maker")
+    messages: Mapped[list[MessageRow]] = relationship(back_populates="decision_maker")
 
     def is_fresh(self, max_age_days: int = 30) -> bool:
         return (datetime.utcnow() - self.last_verified_at) < timedelta(days=max_age_days)
 
 
-class LeadRow(Base):
+class MessageRow(Base):
     """One outreach attempt per (decision_maker, attempt_no).
 
-    To message the same person again: bump attempt_no (use `jhp retry` command).
+    To message the same person again: bump attempt_no via `jhp retry`.
     Company is reachable via decision_maker.company_id.
     """
-    __tablename__ = "leads"
+    __tablename__ = "messages"
     __table_args__ = (
-        UniqueConstraint("decision_maker_id", "attempt_no", name="uq_lead_dm_attempt"),
+        UniqueConstraint("decision_maker_id", "attempt_no", name="uq_message_dm_attempt"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -91,12 +89,13 @@ class LeadRow(Base):
     status: Mapped[str] = mapped_column(String(30), default="new")
     notes: Mapped[str] = mapped_column(String(2000), default="")
 
-    # Message
-    generated_message: Mapped[str | None] = mapped_column(String(4000))
-    generated_message_channel: Mapped[str | None] = mapped_column(String(20))
-    message_generated_at: Mapped[datetime | None]
+    # Body
+    subject: Mapped[str | None] = mapped_column(String(500))   # email only
+    body: Mapped[str | None] = mapped_column(String(4000))
+    channel: Mapped[str | None] = mapped_column(String(20))
+    generated_at: Mapped[datetime | None]
 
-    # Outreach tracking
+    # Tracking
     contacted_at: Mapped[datetime | None]
     replied_at: Mapped[datetime | None]
     reply_text: Mapped[str | None] = mapped_column(String(4000))
@@ -104,7 +103,7 @@ class LeadRow(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    decision_maker: Mapped[DecisionMakerRow] = relationship(back_populates="leads")
+    decision_maker: Mapped[DecisionMakerRow] = relationship(back_populates="messages")
 
 
 class JobPostingRow(Base):
@@ -126,20 +125,17 @@ class JobPostingRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500), index=True)
 
-    # Dating - when the posting was originally made (from source) vs when we saw it
-    source_posted_at: Mapped[datetime | None]  # if source provides posting date
+    source_posted_at: Mapped[datetime | None]
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    is_active: Mapped[bool] = mapped_column(default=True)  # false when posting disappears from source
+    is_active: Mapped[bool] = mapped_column(default=True)
 
 
 # --- Engine & session factory ---
 
 def _get_database_url() -> str:
-    # 1. env var wins
     url = os.environ.get("DATABASE_URL", "").strip()
     if url:
-        # normalize common forms
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql+asyncpg://", 1)
         elif url.startswith("postgresql://") and "+asyncpg" not in url:
@@ -147,7 +143,6 @@ def _get_database_url() -> str:
         elif url.startswith("sqlite:///") and "+aiosqlite" not in url:
             url = url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
         return url
-    # 2. default: SQLite file in project root
     return "sqlite+aiosqlite:///jhp.db"
 
 

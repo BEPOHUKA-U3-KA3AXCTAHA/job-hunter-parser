@@ -58,7 +58,9 @@ def scrape(
     """Scrape companies from a source."""
 
     async def _run():
+        from src.shared import SearchCriteria
         scraper = _get_scraper(source)
+        criteria = SearchCriteria(tech_stack=tech or ["python", "rust"], limit_per_source=limit)
 
         table = Table(title=f"Companies from {source}")
         table.add_column("#", style="dim", width=4)
@@ -69,7 +71,7 @@ def scrape(
 
         rows: list[dict] = []
         count = 0
-        async for company in scraper.fetch_companies(tech_stack_filter=tech, limit=limit):
+        async for company in scraper.fetch_companies(criteria):
             count += 1
             techs = ", ".join(sorted(company.tech_stack.technologies)[:6])
             table.add_row(
@@ -107,7 +109,9 @@ def jobs(
     """List job postings from a source."""
 
     async def _run():
+        from src.shared import SearchCriteria
         scraper = _get_scraper(source)
+        criteria = SearchCriteria(tech_stack=tech or ["python", "rust"], limit_per_source=limit)
 
         table = Table(title=f"Job Postings from {source}")
         table.add_column("#", style="dim", width=4)
@@ -119,7 +123,7 @@ def jobs(
 
         rows: list[dict] = []
         count = 0
-        async for posting in scraper.fetch_job_postings(tech_stack_filter=tech, limit=limit):
+        async for posting in scraper.fetch_job_postings(criteria):
             count += 1
             salary = _format_salary(posting.salary_min, posting.salary_max)
 
@@ -162,14 +166,16 @@ def scrape_all(
     """Scrape jobs from ALL sources at once and save to one CSV."""
 
     async def _run():
+        from src.shared import SearchCriteria
         all_rows: list[dict] = []
+        criteria = SearchCriteria(tech_stack=tech or ["python", "rust"], limit_per_source=limit)
 
         for source_name in SOURCES:
             console.print(f"\n[bold yellow]Scraping {source_name}...[/]")
             try:
                 scraper = _get_scraper(source_name)
                 count = 0
-                async for posting in scraper.fetch_job_postings(tech_stack_filter=tech, limit=limit):
+                async for posting in scraper.fetch_job_postings(criteria):
                     count += 1
                     salary = _format_salary(posting.salary_min, posting.salary_max)
                     all_rows.append({
@@ -196,29 +202,39 @@ def scrape_all(
 
 @app.command()
 def hunt(
-    limit: int = typer.Option(20, help="Max companies per source"),
+    limit: int | None = typer.Option(None, help="Max companies per source (default from config.toml)"),
     tech: list[str] | None = typer.Option(None, help="Tech filter, e.g. --tech python --tech rust"),
     salary_min: int | None = typer.Option(None, help="Min salary USD/year, e.g. 60000"),
-    channel: str = typer.Option("linkedin", help="Message channel: linkedin | email | twitter"),
-    output: str = typer.Option("leads_full.csv", "-o", help="Output CSV"),
-    apollo_key: str | None = typer.Option(None, envvar="APOLLO_API_KEY", help="Apollo.io API key (paid plan)"),
-    apify_key: str | None = typer.Option(None, envvar="APIFY_API_KEY", help="Apify API key"),
-    anthropic_key: str | None = typer.Option(None, envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
+    channel: str | None = typer.Option(None, help="Message channel (default from config.toml)"),
+    output: str = typer.Option("messages_full.csv", "-o", help="Output CSV"),
+    skip_fresh_days: int | None = typer.Option(None, help="Skip re-enrichment if contacts verified within N days (0 = always refresh, default from config.toml)"),
 ) -> None:
     """FULL PIPELINE: scrape all sources -> find contacts -> generate messages -> CSV.
 
     Contact sources tried in order: TheOrg (free) -> Apollo (paid) -> Apify (paid).
     Whichever finds data first is used per company.
+
+    Secrets (API keys) come from .env. App config from config.toml.
     """
-    from src.outreach.models import OutreachChannel
+    from src.config import get_secrets, load_app_config
+    from src.messages.models import MessageChannel
+    from src.messages.repo import SqliteMessageRepository
     from src.pipeline import run_pipeline
     from src.shared import CandidateProfile, SearchCriteria
 
+    secrets = get_secrets()
+    app_config = load_app_config()
+
+    eff_limit = limit if limit is not None else app_config.default_limit
+    eff_channel = channel if channel else app_config.default_channel
+    eff_skip_fresh = skip_fresh_days if skip_fresh_days is not None else app_config.skip_fresh_days
+    eff_tech = tech if tech else app_config.default_tech
+
     async def _run():
         criteria = SearchCriteria(
-            tech_stack=tech or ["python", "rust"],
+            tech_stack=eff_tech,
             salary_min_usd=salary_min,
-            limit_per_source=limit,
+            limit_per_source=eff_limit,
         )
         profile = CandidateProfile()
 
@@ -242,31 +258,35 @@ def hunt(
         console.print("[green]TheOrg adapter enabled (free)[/]")
 
         # 2. Apollo - paid plan needed for API
-        if apollo_key:
+        if secrets.apollo_api_key:
             from src.people.adapters.apollo import ApolloAdapter
-            apollo = ApolloAdapter(apollo_key)
+            apollo = ApolloAdapter(secrets.apollo_api_key)
             dm_searches.append(apollo)
             enrichments.append(apollo)
             console.print("[green]Apollo adapter enabled (paid)[/]")
 
         # 3. Apify - $5-49 LinkedIn scraping
-        if apify_key:
+        if secrets.apify_api_key:
             from src.people.adapters.apify import ApifyAdapter
-            apify = ApifyAdapter(apify_key)
+            apify = ApifyAdapter(secrets.apify_api_key)
             dm_searches.append(apify)
             enrichments.append(apify)
             console.print("[green]Apify adapter enabled (paid, ~$5/1k)[/]")
 
         # LLM (optional)
         llm = None
-        if anthropic_key:
-            from src.outreach.llm import ClaudeLLMAdapter
-            llm = ClaudeLLMAdapter(anthropic_key)
+        if secrets.anthropic_api_key:
+            from src.messages.llm import ClaudeLLMAdapter
+            llm = ClaudeLLMAdapter(secrets.anthropic_api_key)
             console.print("[green]Claude message generation enabled[/]")
         else:
-            console.print("[yellow]No ANTHROPIC_API_KEY - messages will be empty[/]")
+            console.print("[yellow]No ANTHROPIC_API_KEY - message bodies will be empty[/]")
 
-        ch = OutreachChannel(channel)
+        ch = MessageChannel(eff_channel)
+        repo = SqliteMessageRepository()
+
+        from src.messages.db import init_db
+        await init_db()
 
         await run_pipeline(
             sources=sources,
@@ -277,6 +297,8 @@ def hunt(
             profile=profile,
             channel=ch,
             output_csv=output,
+            skip_fresh_days=eff_skip_fresh,
+            repo=repo,
         )
 
     asyncio.run(_run())
@@ -286,7 +308,7 @@ def hunt(
 def stats() -> None:
     """Show DB statistics."""
     from sqlalchemy import func, select
-    from src.leads.db import CompanyRow, DecisionMakerRow, LeadRow, get_session_maker, init_db
+    from src.messages.db import CompanyRow, DecisionMakerRow, MessageRow, get_session_maker, init_db
 
     async def _run():
         await init_db()
@@ -294,7 +316,7 @@ def stats() -> None:
         async with Session() as session:
             total_companies = (await session.execute(select(func.count(CompanyRow.id)))).scalar() or 0
             total_dms = (await session.execute(select(func.count(DecisionMakerRow.id)))).scalar() or 0
-            total_leads = (await session.execute(select(func.count(LeadRow.id)))).scalar() or 0
+            total_leads = (await session.execute(select(func.count(MessageRow.id)))).scalar() or 0
 
             # Companies with/without contacts
             with_contacts = (await session.execute(
@@ -344,7 +366,7 @@ def companies(
 ) -> None:
     """List all companies in DB."""
     from sqlalchemy import select
-    from src.leads.db import CompanyRow, get_session_maker, init_db
+    from src.messages.db import CompanyRow, get_session_maker, init_db
 
     async def _run():
         await init_db()
@@ -386,7 +408,7 @@ def contacts(
     """List all decision makers in DB."""
     from datetime import datetime, timedelta
     from sqlalchemy import select
-    from src.leads.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
+    from src.messages.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
 
     async def _run():
         await init_db()
@@ -436,7 +458,7 @@ def stale(
     """List contacts that haven't been re-verified in N days."""
     from datetime import datetime, timedelta
     from sqlalchemy import select
-    from src.leads.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
+    from src.messages.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
 
     async def _run():
         await init_db()
@@ -479,18 +501,18 @@ def retry(
     Bumps attempt_no on each. Use after status=no_reply to re-target stale leads.
     """
     from sqlalchemy import select
-    from src.leads.db import LeadRow, get_session_maker, init_db
-    from src.leads.repo import SqliteLeadRepository
+    from src.messages.db import MessageRow, get_session_maker, init_db
+    from src.messages.repo import SqliteMessageRepository
 
     async def _run():
         await init_db()
-        repo = SqliteLeadRepository()
+        repo = SqliteMessageRepository()
         Session = get_session_maker()
         created = 0
         async with Session() as session:
             # Find existing leads with given status, only the latest attempt per dm
             result = await session.execute(
-                select(LeadRow).where(LeadRow.status == status).limit(limit)
+                select(MessageRow).where(MessageRow.status == status).limit(limit)
             )
             leads = result.scalars().all()
             console.print(f"Found {len(leads)} leads with status='{status}'")
@@ -510,7 +532,7 @@ def retry(
 def reset_db() -> None:
     """Drop all tables and recreate (WIPES DATA, only for SQLite)."""
     import os
-    from src.leads.db import _get_database_url, init_db
+    from src.messages.db import _get_database_url, init_db
     url = _get_database_url()
     if url.startswith("sqlite"):
         path = url.split("///")[-1]

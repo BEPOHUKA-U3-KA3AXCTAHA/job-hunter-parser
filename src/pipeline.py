@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -11,10 +12,9 @@ from rich.table import Table
 
 from src.companies.models import Company
 from src.companies.ports import CompanySource
-from src.leads.models import Lead
-from src.leads.scorer import LeadScorer
-from src.outreach.models import OutreachChannel
-from src.outreach.ports import LLMGenerator
+from src.messages.models import Message, MessageChannel, MessageStatus
+from src.messages.ports import LLMGenerator, MessageRepository
+from src.messages.scorer import RelevanceScorer
 from src.people.models import DecisionMakerRole
 from src.people.ports import ContactEnrichment, DecisionMakerSearch
 from src.shared import CandidateProfile, SearchCriteria, TechStack
@@ -32,14 +32,13 @@ DEFAULT_ROLES = [
 
 @dataclass
 class PipelineResult:
-    company: Company
-    lead: Lead | None
+    message: Message
     contact_name: str
     contact_role: str
     contact_email: str
     contact_linkedin: str
     contact_twitter: str
-    message: str
+    body: str
     channel: str
 
 
@@ -50,14 +49,16 @@ async def run_pipeline(
     llm: LLMGenerator | None,
     criteria: SearchCriteria,
     profile: CandidateProfile,
-    channel: OutreachChannel = OutreachChannel.LINKEDIN,
-    output_csv: str = "leads_full.csv",
+    channel: MessageChannel = MessageChannel.LINKEDIN,
+    output_csv: str = "messages_full.csv",
+    skip_fresh_days: int = 30,
+    repo: MessageRepository | None = None,
 ) -> list[PipelineResult]:
-    """Runs the full pipeline and returns results.
+    """Runs the full pipeline.
 
-    dm_searches and enrichments are lists - tried in order until one returns data.
+    skip_fresh_days: if contacts for a company were verified within N days,
+    skip re-enrichment (saves API calls). Set to 0 to always refresh.
     """
-
     results: list[PipelineResult] = []
 
     # Step 1: Scrape companies from all sources
@@ -78,95 +79,111 @@ async def run_pipeline(
         console.print("[red]No companies found. Check your criteria.[/]")
         return results
 
-    # Step 2: Find decision makers - try each source in order
+    # Step 2: Find decision makers (cache-aware)
     console.print("\n[bold cyan]Step 2/4: Finding decision makers...[/]")
     if dm_searches:
-        active_sources = ", ".join(s.source_name for s in dm_searches)
-        console.print(f"  Sources: [yellow]{active_sources}[/]")
+        active = ", ".join(s.source_name for s in dm_searches)
+        console.print(f"  Sources: [yellow]{active}[/], skip-fresh: [yellow]{skip_fresh_days}d[/]")
 
-    scorer = LeadScorer(TechStack.from_strings(*profile.tech_stack))
-    leads: list[Lead] = []
+    scorer = RelevanceScorer(TechStack.from_strings(*profile.tech_stack))
+    messages: list[Message] = []
+    cache_hits = 0
+    cache_misses = 0
 
     for company in companies:
         dms_for_company: list = []
 
-        # Try each source until we find any decision makers
-        for dm_search in dm_searches:
-            try:
-                async for dm in dm_search.find(company, DEFAULT_ROLES, limit=3):
-                    # Try to enrich with each enrichment source
-                    for enr in enrichments:
-                        try:
-                            if company.website:
-                                domain = company.website.replace("https://", "").replace("http://", "").split("/")[0]
-                            else:
-                                domain = company.name.lower().replace(" ", "") + ".com"
-                            dm = await enr.enrich(dm, domain)
-                        except Exception as e:
-                            logger.debug("Enrichment {} failed: {}", enr.source_name, e)
-                    dms_for_company.append(dm)
-            except Exception as e:
-                logger.warning("DM search {} failed for {}: {}", dm_search.source_name, company.name, e)
+        # Check cache first
+        if repo and skip_fresh_days > 0:
+            cached = await repo.get_fresh_contacts(company.name, skip_fresh_days)
+            if cached:
+                dms_for_company = cached
+                cache_hits += 1
+                logger.debug("Cache hit for {}: {} contacts", company.name, len(cached))
 
-            if dms_for_company:
-                break  # found contacts, no need to try other sources
+        # Cache miss — fetch from sources
+        if not dms_for_company:
+            cache_misses += 1
+            for dm_search in dm_searches:
+                try:
+                    async for dm in dm_search.find(company, DEFAULT_ROLES, limit=3):
+                        for enr in enrichments:
+                            try:
+                                if company.website:
+                                    domain = company.website.replace("https://", "").replace("http://", "").split("/")[0]
+                                else:
+                                    domain = company.name.lower().replace(" ", "") + ".com"
+                                dm = await enr.enrich(dm, domain)
+                            except Exception as e:
+                                logger.debug("Enrichment {} failed: {}", enr.source_name, e)
+                        dms_for_company.append(dm)
+                except Exception as e:
+                    logger.warning("DM search {} failed for {}: {}", dm_search.source_name, company.name, e)
 
-        # If nothing found, add empty lead
+                if dms_for_company:
+                    break
+
         if not dms_for_company:
             dms_for_company = [_empty_dm(company)]
 
         for dm in dms_for_company:
             score = scorer.score(company, dm)
-            leads.append(Lead(company=company, decision_maker=dm, relevance_score=score))
+            messages.append(Message(
+                decision_maker=dm,
+                company=company,
+                relevance_score=score,
+                channel=channel,
+            ))
 
-    console.print(f"  [green]Built {len(leads)} leads[/]")
+    console.print(f"  [green]Built {len(messages)} messages[/] (cache hits: {cache_hits}, misses: {cache_misses})")
 
-    # Step 3: Generate outreach messages (if LLM available)
-    console.print("\n[bold cyan]Step 3/4: Generating messages...[/]")
+    # Step 3: Generate message bodies via LLM
+    console.print("\n[bold cyan]Step 3/4: Generating message bodies...[/]")
 
-    for lead in leads:
-        message_text = ""
-        if llm:
+    generated_count = 0
+    for msg in messages:
+        if llm and msg.decision_maker.full_name != "Unknown (find manually)":
             try:
-                msg = await llm.generate_outreach(lead, channel, profile.summary)
-                message_text = msg.body
+                body = await llm.generate_body(msg, profile.summary)
+                if body:
+                    msg.body = body
+                    msg.message_generated_at = datetime.utcnow()
+                    msg.advance_status(MessageStatus.GENERATED)
+                    generated_count += 1
             except Exception as e:
-                logger.warning("LLM failed for {}: {}", lead.company.name, e)
+                logger.warning("LLM failed for {}: {}", msg.company.name, e)
 
-        dm = lead.decision_maker
+    console.print(f"  [green]Generated {generated_count} message bodies[/]")
+
+    # Save to DB
+    if repo:
+        console.print("\n[bold cyan]Saving to DB...[/]")
+        try:
+            real_messages = [m for m in messages if m.decision_maker.full_name != "Unknown (find manually)"]
+            await repo.save_many(real_messages)
+            total_in_db = await repo.count()
+            console.print(f"  [green]DB now has {total_in_db} total messages[/]")
+        except Exception as e:
+            console.print(f"  [red]DB save failed: {e}[/]")
+
+    # Build results for CSV
+    for msg in messages:
+        dm = msg.decision_maker
         results.append(PipelineResult(
-            company=lead.company,
-            lead=lead,
+            message=msg,
             contact_name=dm.full_name,
             contact_role=dm.title_raw or dm.role.value,
             contact_email=str(dm.email) if dm.email else "",
             contact_linkedin=str(dm.linkedin_url) if dm.linkedin_url else "",
             contact_twitter=dm.twitter_handle or "",
-            message=message_text,
+            body=msg.body,
             channel=channel.value,
         ))
-
-    console.print(f"  [green]Generated {sum(1 for r in results if r.message)} messages[/]")
-
-    # Step 3.5: Save to DB (deduplication + history)
-    console.print("\n[bold cyan]Saving to DB...[/]")
-    try:
-        from src.leads.db import init_db
-        from src.leads.repo import SqliteLeadRepository
-        await init_db()
-        repo = SqliteLeadRepository()
-        real_leads = [l for l in leads if l.decision_maker.full_name != "Unknown (find manually)"]
-        await repo.save_many(real_leads)
-        total_in_db = await repo.count()
-        console.print(f"  [green]DB now has {total_in_db} total leads[/]")
-    except Exception as e:
-        console.print(f"  [red]DB save failed: {e}[/]")
 
     # Step 4: Export to CSV
     console.print(f"\n[bold cyan]Step 4/4: Exporting to {output_csv}...[/]")
     _export_csv(results, output_csv)
 
-    # Print summary table
     _print_summary(results)
 
     return results
@@ -188,24 +205,24 @@ def _export_csv(results: list[PipelineResult], filepath: str) -> None:
         writer.writerow([
             "company", "location", "source", "source_url", "tech_stack",
             "contact_name", "contact_role", "contact_email", "contact_linkedin", "contact_twitter",
-            "relevance_score", "channel", "message",
+            "relevance_score", "channel", "body",
         ])
         for r in results:
-            company = r.company
+            c = r.message.company
             writer.writerow([
-                company.name,
-                company.location or "Remote",
-                company.source or "",
-                company.source_url or "",
-                ", ".join(sorted(company.tech_stack.technologies)[:6]),
+                c.name,
+                c.location or "Remote",
+                c.source or "",
+                c.source_url or "",
+                ", ".join(sorted(c.tech_stack.technologies)[:6]),
                 r.contact_name,
                 r.contact_role,
                 r.contact_email,
                 r.contact_linkedin,
                 r.contact_twitter,
-                r.lead.relevance_score if r.lead else 0,
+                r.message.relevance_score,
                 r.channel,
-                r.message.replace("\n", " "),
+                r.body.replace("\n", " "),
             ])
 
     console.print(f"  [green]Saved {len(results)} rows to {path.resolve()}[/]")
@@ -218,17 +235,17 @@ def _print_summary(results: list[PipelineResult]) -> None:
     table.add_column("Contact", min_width=20)
     table.add_column("Role", min_width=10)
     table.add_column("Email", style="green")
-    table.add_column("Message", style="dim", max_width=40)
+    table.add_column("Body", style="dim", max_width=40)
 
     for i, r in enumerate(results[:30], 1):
-        msg_preview = r.message[:40] + "..." if len(r.message) > 40 else r.message
+        preview = r.body[:40] + "..." if len(r.body) > 40 else r.body
         table.add_row(
             str(i),
-            r.company.name,
+            r.message.company.name,
             r.contact_name,
             r.contact_role,
             r.contact_email or "-",
-            msg_preview or "[no message]",
+            preview or "[empty]",
         )
 
     console.print(table)

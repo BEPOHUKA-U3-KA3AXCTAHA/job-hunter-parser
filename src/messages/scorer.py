@@ -5,8 +5,11 @@ from src.people.models import DecisionMaker
 from src.shared import TechStack
 
 
-class LeadScorer:
-    """Calculates relevance score 0-100 for a (company, decision_maker) pair."""
+class RelevanceScorer:
+    """Calculates relevance score 0-100 for a (company, decision_maker) pair.
+
+    Higher = better outreach target.
+    """
 
     def __init__(self, target_tech_stack: TechStack) -> None:
         self._target = target_tech_stack

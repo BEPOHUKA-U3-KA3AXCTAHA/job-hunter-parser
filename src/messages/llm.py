@@ -4,10 +4,8 @@ from __future__ import annotations
 import anthropic
 from loguru import logger
 
-from src.leads.models import Lead
-from src.outreach.models import OutreachChannel, OutreachMessage
-from src.outreach.ports import LLMGenerator
-from src.shared import CandidateProfile
+from src.messages.models import Message
+from src.messages.ports import LLMGenerator
 
 _SYSTEM_PROMPT = """\
 You are a professional job outreach assistant. Generate a short, personalized message
@@ -36,17 +34,13 @@ class ClaudeLLMAdapter(LLMGenerator):
     def __init__(self, api_key: str) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
 
-    async def generate_outreach(
-        self,
-        lead: Lead,
-        channel: OutreachChannel,
-        candidate_profile_summary: str,
-    ) -> OutreachMessage:
-        company = lead.company
-        dm = lead.decision_maker
+    async def generate_body(self, message: Message, candidate_profile_summary: str) -> str:
+        company = message.company
+        dm = message.decision_maker
+        channel = message.channel.value if message.channel else "linkedin"
 
         user_prompt = f"""\
-Generate a {channel.value} outreach message.
+Generate a {channel} outreach message.
 
 CANDIDATE:
 {candidate_profile_summary}
@@ -60,7 +54,6 @@ TARGET:
 
 Write the message now. Just the message text, nothing else.
 """
-
         try:
             response = self._client.messages.create(
                 model=self.model_name,
@@ -71,19 +64,7 @@ Write the message now. Just the message text, nothing else.
             body = response.content[0].text.strip()
         except Exception as e:
             logger.error("Claude generation failed for {}: {}", company.name, e)
-            body = f"[LLM ERROR: {e}]"
-
-        subject = None
-        if channel == OutreachChannel.EMAIL and body.startswith("Subject:"):
-            lines = body.split("\n", 1)
-            subject = lines[0].replace("Subject:", "").strip()
-            body = lines[1].strip() if len(lines) > 1 else body
+            return ""
 
         logger.info("Generated {} message for {} at {}", channel, dm.full_name, company.name)
-
-        return OutreachMessage(
-            lead_id=lead.id,
-            channel=channel,
-            subject=subject,
-            body=body,
-        )
+        return body

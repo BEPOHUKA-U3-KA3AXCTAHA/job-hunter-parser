@@ -1,0 +1,43 @@
+# App configuration (non-sensitive). Checked into git.
+# Secrets like API keys live in .env
+
+[scrapers.remoteok]
+enabled = true
+
+[scrapers.web3_career]
+enabled = true
+max_pages = 10
+category = "rust"   # rust | python | backend | senior | remote
+
+[scrapers.linkedin]
+enabled = true
+max_pages = 10
+location = "Remote"
+
+[scrapers.rustjobs]
+enabled = true
+
+[enrichment]
+# How many days a contact is considered fresh.
+# If DB has a contact verified within this window, hunt skips re-enriching it.
+# 0 = always refresh (hit TheOrg/Apollo every run)
+skip_fresh_days = 30
+max_contacts_per_company = 3
+target_roles = [
+    "founder",
+    "ceo",
+    "cto",
+    "head_of_engineering",
+    "engineering_manager",
+]
+
+[llm]
+# Claude model for generating outreach bodies
+model = "claude-sonnet-4-20250514"
+temperature = 0.7
+max_tokens = 500
+
+[pipeline]
+default_limit = 50
+default_channel = "linkedin"   # linkedin | email | twitter | telegram | discord
+default_tech = ["python", "rust"]
