@@ -414,14 +414,14 @@ def contacts(
         await init_db()
         Session = get_session_maker()
         async with Session() as session:
-            stmt = select(DecisionMakerRow, CompanyRow).join(CompanyRow).order_by(DecisionMakerRow.last_verified_at.desc()).limit(limit)
+            stmt = select(DecisionMakerRow, CompanyRow).join(CompanyRow).order_by(DecisionMakerRow.last_seen_at.desc()).limit(limit)
             if role:
                 stmt = stmt.where(DecisionMakerRow.role == role)
             if company:
                 stmt = stmt.where(CompanyRow.name.ilike(f"%{company}%"))
             if max_age_days > 0:
                 cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-                stmt = stmt.where(DecisionMakerRow.last_verified_at >= cutoff)
+                stmt = stmt.where(DecisionMakerRow.last_seen_at >= cutoff)
             result = await session.execute(stmt)
             rows = result.all()
 
@@ -435,7 +435,7 @@ def contacts(
 
         now = datetime.utcnow()
         for i, (dm, comp) in enumerate(rows, 1):
-            age_days = (now - dm.last_verified_at).days
+            age_days = (now - dm.last_seen_at).days
             freshness = f"{age_days}d ago" if age_days > 0 else "today"
             freshness_style = "[green]" if age_days < 7 else "[yellow]" if age_days < 30 else "[red]"
             table.add_row(
@@ -468,8 +468,8 @@ def stale(
             stmt = (
                 select(DecisionMakerRow, CompanyRow)
                 .join(CompanyRow)
-                .where(DecisionMakerRow.last_verified_at < cutoff)
-                .order_by(DecisionMakerRow.last_verified_at.asc())
+                .where(DecisionMakerRow.last_seen_at < cutoff)
+                .order_by(DecisionMakerRow.last_seen_at.asc())
                 .limit(limit)
             )
             result = await session.execute(stmt)
@@ -483,7 +483,7 @@ def stale(
         table.add_column("Last verified", style="red")
         now = datetime.utcnow()
         for dm, comp in rows:
-            age = (now - dm.last_verified_at).days
+            age = (now - dm.last_seen_at).days
             table.add_row(dm.full_name, dm.role, comp.name, f"{age} days ago")
         console.print(table)
         console.print(f"\nTotal stale: [red]{len(rows)}[/]")

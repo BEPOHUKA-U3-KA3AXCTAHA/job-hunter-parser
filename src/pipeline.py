@@ -147,7 +147,7 @@ async def run_pipeline(
                 body = await llm.generate_body(msg, profile.summary)
                 if body:
                     msg.body = body
-                    msg.message_generated_at = datetime.utcnow()
+                    msg.generated_at = datetime.utcnow()
                     msg.advance_status(MessageStatus.GENERATED)
                     generated_count += 1
             except Exception as e:

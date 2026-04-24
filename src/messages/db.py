@@ -60,14 +60,13 @@ class DecisionMakerRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
 
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_verified_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # last time source confirmed them
 
     company: Mapped[CompanyRow] = relationship(back_populates="decision_makers")
     messages: Mapped[list[MessageRow]] = relationship(back_populates="decision_maker")
 
     def is_fresh(self, max_age_days: int = 30) -> bool:
-        return (datetime.utcnow() - self.last_verified_at) < timedelta(days=max_age_days)
+        return (datetime.utcnow() - self.last_seen_at) < timedelta(days=max_age_days)
 
 
 class MessageRow(Base):
@@ -89,19 +88,11 @@ class MessageRow(Base):
     status: Mapped[str] = mapped_column(String(30), default="new")
     notes: Mapped[str] = mapped_column(String(2000), default="")
 
-    # Body
+    # Body of the message — generated once at this attempt
     subject: Mapped[str | None] = mapped_column(String(500))   # email only
     body: Mapped[str | None] = mapped_column(String(4000))
     channel: Mapped[str | None] = mapped_column(String(20))
-    generated_at: Mapped[datetime | None]
-
-    # Tracking
-    contacted_at: Mapped[datetime | None]
-    replied_at: Mapped[datetime | None]
-    reply_text: Mapped[str | None] = mapped_column(String(4000))
-
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    generated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # the only date
 
     decision_maker: Mapped[DecisionMakerRow] = relationship(back_populates="messages")
 
@@ -125,7 +116,6 @@ class JobPostingRow(Base):
     source: Mapped[str | None] = mapped_column(String(50))
     source_url: Mapped[str | None] = mapped_column(String(500), index=True)
 
-    source_posted_at: Mapped[datetime | None]
     first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active: Mapped[bool] = mapped_column(default=True)

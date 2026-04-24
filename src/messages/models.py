@@ -48,20 +48,13 @@ class Message:
     status: MessageStatus = MessageStatus.NEW
     notes: str = ""
 
-    # Message body
+    # Message body — written once at this attempt
     body: str = ""
     subject: str | None = None                  # only for email
     channel: MessageChannel | None = None
-
-    # Tracking
-    message_generated_at: datetime | None = None
-    contacted_at: datetime | None = None
-    replied_at: datetime | None = None
-    reply_text: str | None = None
+    generated_at: datetime = field(default_factory=datetime.utcnow)
 
     id: UUID = field(default_factory=uuid4)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
 
     def is_worth_outreach(self, min_score: int = 60) -> bool:
         return (
@@ -72,4 +65,3 @@ class Message:
 
     def advance_status(self, new_status: MessageStatus) -> None:
         self.status = new_status
-        self.updated_at = datetime.utcnow()

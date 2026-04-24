@@ -1,7 +1,7 @@
 """SQLite-backed MessageRepository using SQLAlchemy async.
 
 Deduplicates by (decision_maker, attempt_no).
-Updates last_seen_at / last_verified_at on re-scrape.
+Updates last_seen_at / last_seen_at on re-scrape.
 """
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ class SqliteMessageRepository(MessageRepository):
     async def get_fresh_contacts(
         self, company_name: str, max_age_days: int
     ) -> list[DecisionMaker] | None:
-        """Return cached contacts if their last_verified_at is within N days.
+        """Return cached contacts if their last_seen_at is within N days.
         Returns None if company not in DB, or if all its contacts are stale.
         Lets pipeline skip re-scraping TheOrg/Apollo on subsequent runs.
         """
@@ -109,7 +109,7 @@ class SqliteMessageRepository(MessageRepository):
             dm_result = await session.execute(
                 select(DecisionMakerRow).where(
                     DecisionMakerRow.company_id == comp_row.id,
-                    DecisionMakerRow.last_verified_at >= cutoff,
+                    DecisionMakerRow.last_seen_at >= cutoff,
                 )
             )
             dm_rows = dm_result.scalars().all()
@@ -154,7 +154,6 @@ class SqliteMessageRepository(MessageRepository):
             row = result.scalar_one_or_none()
             if row:
                 row.status = status.value
-                row.updated_at = datetime.utcnow()
                 await session.commit()
 
     async def count(self) -> int:
@@ -222,7 +221,6 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
         row.linkedin_url = (str(dm.linkedin_url) if dm.linkedin_url else None) or row.linkedin_url
         row.twitter_handle = dm.twitter_handle or row.twitter_handle
         row.last_seen_at = now
-        row.last_verified_at = now
         row._is_new = False
     else:
         row = DecisionMakerRow(
@@ -236,7 +234,6 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
             location=dm.location,
             first_seen_at=now,
             last_seen_at=now,
-            last_verified_at=now,
         )
         session.add(row)
         await session.flush()
@@ -262,8 +259,7 @@ async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
             row.body = msg.body
             row.subject = msg.subject
             row.channel = msg.channel.value if msg.channel else None
-            row.generated_at = msg.message_generated_at
-        row.updated_at = datetime.utcnow()
+            row.generated_at = msg.generated_at
         row._is_new = False
     else:
         row = MessageRow(
@@ -275,7 +271,7 @@ async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
             subject=msg.subject,
             body=msg.body or None,
             channel=msg.channel.value if msg.channel else None,
-            generated_at=msg.message_generated_at,
+            generated_at=msg.generated_at,
         )
         session.add(row)
         await session.flush()
@@ -355,8 +351,5 @@ async def _row_to_message(session, row: MessageRow) -> Message:
         body=row.body or "",
         subject=row.subject,
         channel=channel,
-        message_generated_at=row.generated_at,
-        contacted_at=row.contacted_at,
-        replied_at=row.replied_at,
-        reply_text=row.reply_text,
+        generated_at=row.generated_at,
     )
