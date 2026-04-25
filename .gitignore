@@ -67,3 +67,6 @@ secrets/
 # Scraping artifacts
 screenshots/
 downloads/
+
+# Claude Code session state
+.claude/

@@ -46,6 +46,17 @@ class JobPosting:
     source: str | None = None                   # "web3.career" / "linkedin" / etc
     source_url: str | None = None
 
-    id: UUID = field(default_factory=uuid4)
+    # Competition signals — used to filter saturated postings.
+    # applicants_count: best-effort, only LinkedIn exposes it publicly
+    # posted_at: when the post went live; older posts ⇒ more applicants
+    applicants_count: int | None = None
     posted_at: datetime | None = None
+
+    id: UUID = field(default_factory=uuid4)
     discovered_at: datetime = field(default_factory=datetime.utcnow)
+
+    @property
+    def posted_age_days(self) -> int | None:
+        if self.posted_at is None:
+            return None
+        return (datetime.utcnow() - self.posted_at).days

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 import httpx
 from loguru import logger
@@ -71,6 +72,10 @@ class RemoteOKScraper(CompanySource):
             if not criteria.matches_salary(salary_min):
                 continue
 
+            posted_at = _parse_epoch(job.get("epoch") or job.get("date"))
+            if not criteria.matches_competition(None, posted_at):
+                continue
+
             yield JobPosting(
                 title=title,
                 company_name=job.get("company", ""),
@@ -84,6 +89,7 @@ class RemoteOKScraper(CompanySource):
                 salary_currency="USD" if salary_min else None,
                 source="remoteok",
                 source_url=job.get("url"),
+                posted_at=posted_at,
             )
             count += 1
             if count >= criteria.limit_per_source:
@@ -104,5 +110,19 @@ def _parse_salary(val: str | int | None) -> int | None:
         return None
     try:
         return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_epoch(val) -> datetime | None:
+    """RemoteOK gives `epoch` (unix seconds) and ISO `date`. Try epoch first."""
+    if val is None or val == "":
+        return None
+    try:
+        return datetime.utcfromtimestamp(int(val))
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00")).replace(tzinfo=None)
     except (ValueError, TypeError):
         return None

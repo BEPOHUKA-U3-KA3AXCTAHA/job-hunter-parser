@@ -208,6 +208,8 @@ def hunt(
     channel: str | None = typer.Option(None, help="Message channel (default from config.toml)"),
     output: str = typer.Option("messages_full.csv", "-o", help="Output CSV"),
     skip_fresh_days: int | None = typer.Option(None, help="Skip re-enrichment if contacts verified within N days (0 = always refresh, default from config.toml)"),
+    max_applicants: int | None = typer.Option(None, help="Skip job posts with more than N applicants (LinkedIn only — passes when unknown)"),
+    max_age_days: int | None = typer.Option(None, help="Skip job posts older than N days (LinkedIn / RemoteOK / web3.career; rustjobs has no date)"),
 ) -> None:
     """FULL PIPELINE: scrape all sources -> find contacts -> generate messages -> CSV.
 
@@ -235,16 +237,26 @@ def hunt(
             tech_stack=eff_tech,
             salary_min_usd=salary_min,
             limit_per_source=eff_limit,
+            max_applicants=max_applicants,
+            max_posted_age_days=max_age_days,
         )
         profile = CandidateProfile()
 
-        # Job board scrapers
+        # Job board scrapers. Web3.career rotates categories to widen the funnel.
+        # RustJobs needs playwright; skip silently if not installed.
         sources = []
-        for name in SOURCES:
-            try:
-                sources.append(_get_scraper(name))
-            except Exception:
-                pass
+        from src.companies.scrapers.remoteok import RemoteOKScraper
+        from src.companies.scrapers.linkedin import LinkedInScraper
+        from src.companies.scrapers.web3career import Web3CareerScraper
+        sources.append(RemoteOKScraper())
+        sources.append(LinkedInScraper())
+        for cat in ("rust", "python", "backend", "senior"):
+            sources.append(Web3CareerScraper(category=cat))
+        try:
+            from src.companies.scrapers.rustjobs import RustJobsScraper
+            sources.append(RustJobsScraper())
+        except ImportError:
+            console.print("[yellow]playwright not installed → skipping rustjobs[/]")
 
         # Decision maker sources (tried in order)
         dm_searches = []
@@ -256,6 +268,11 @@ def hunt(
         dm_searches.append(theorg)
         enrichments.append(theorg)
         console.print("[green]TheOrg adapter enabled (free)[/]")
+
+        # 1b. Email pattern guesser - always on, free, runs after TheOrg per dm
+        from src.people.adapters.email_guesser import EmailPatternGuesser
+        enrichments.append(EmailPatternGuesser())
+        console.print("[green]Email pattern guesser enabled (free)[/]")
 
         # 2. Apollo - paid plan needed for API
         if secrets.apollo_api_key:
@@ -273,14 +290,23 @@ def hunt(
             enrichments.append(apify)
             console.print("[green]Apify adapter enabled (paid, ~$5/1k)[/]")
 
-        # LLM (optional)
+        # LLM (optional). Priority: free providers first.
+        # Gemini: 1500 req/day free.  Groq: 6000/day, very fast.  Anthropic: paid per token.
         llm = None
-        if secrets.anthropic_api_key:
+        if secrets.gemini_api_key:
+            from src.messages.llm_gemini import GeminiLLMAdapter
+            llm = GeminiLLMAdapter(secrets.gemini_api_key)
+            console.print("[green]Gemini Flash message generation enabled (free tier)[/]")
+        elif secrets.groq_api_key:
+            from src.messages.llm_groq import GroqLLMAdapter
+            llm = GroqLLMAdapter(secrets.groq_api_key)
+            console.print("[green]Groq Llama-3.3-70B message generation enabled (free tier)[/]")
+        elif secrets.anthropic_api_key:
             from src.messages.llm import ClaudeLLMAdapter
             llm = ClaudeLLMAdapter(secrets.anthropic_api_key)
-            console.print("[green]Claude message generation enabled[/]")
+            console.print("[green]Claude message generation enabled (paid)[/]")
         else:
-            console.print("[yellow]No ANTHROPIC_API_KEY - message bodies will be empty[/]")
+            console.print("[yellow]No LLM key (GEMINI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY) — message bodies will be empty[/]")
 
         ch = MessageChannel(eff_channel)
         repo = SqliteMessageRepository()
@@ -372,7 +398,11 @@ def companies(
         await init_db()
         Session = get_session_maker()
         async with Session() as session:
-            stmt = select(CompanyRow).order_by(CompanyRow.last_seen_at.desc()).limit(limit)
+            stmt = (
+                select(CompanyRow)
+                .order_by(CompanyRow.last_dm_scan_at.desc().nullslast(), CompanyRow.name)
+                .limit(limit)
+            )
             if source:
                 stmt = stmt.where(CompanyRow.source == source)
             result = await session.execute(stmt)
@@ -384,14 +414,15 @@ def companies(
         table.add_column("Source")
         table.add_column("Location")
         table.add_column("Tech")
-        table.add_column("Last seen", style="dim")
+        table.add_column("DM scan", style="dim")
 
         for i, r in enumerate(rows, 1):
+            scan = r.last_dm_scan_at.strftime("%Y-%m-%d") if r.last_dm_scan_at else "-"
             table.add_row(
                 str(i), r.name, r.source or "-",
                 (r.location or "Remote")[:25],
                 (r.tech_stack or "")[:35],
-                r.last_seen_at.strftime("%Y-%m-%d"),
+                scan,
             )
         console.print(table)
 
@@ -403,9 +434,12 @@ def contacts(
     limit: int = typer.Option(50, help="Max rows"),
     role: str | None = typer.Option(None, help="Filter by role (ceo|cto|founder|...)"),
     company: str | None = typer.Option(None, help="Filter by company name"),
-    max_age_days: int = typer.Option(30, help="Only show contacts verified within N days (0=all)"),
+    max_age_days: int = typer.Option(30, help="Only show contacts whose company was DM-scanned within N days (0=all)"),
 ) -> None:
-    """List all decision makers in DB."""
+    """List all decision makers in DB.
+
+    Freshness is per-company (companies.last_dm_scan_at), not per-dm.
+    """
     from datetime import datetime, timedelta
     from sqlalchemy import select
     from src.messages.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
@@ -414,14 +448,19 @@ def contacts(
         await init_db()
         Session = get_session_maker()
         async with Session() as session:
-            stmt = select(DecisionMakerRow, CompanyRow).join(CompanyRow).order_by(DecisionMakerRow.last_seen_at.desc()).limit(limit)
+            stmt = (
+                select(DecisionMakerRow, CompanyRow)
+                .join(CompanyRow)
+                .order_by(CompanyRow.last_dm_scan_at.desc().nullslast(), CompanyRow.name)
+                .limit(limit)
+            )
             if role:
                 stmt = stmt.where(DecisionMakerRow.role == role)
             if company:
                 stmt = stmt.where(CompanyRow.name.ilike(f"%{company}%"))
             if max_age_days > 0:
                 cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-                stmt = stmt.where(DecisionMakerRow.last_seen_at >= cutoff)
+                stmt = stmt.where(CompanyRow.last_dm_scan_at >= cutoff)
             result = await session.execute(stmt)
             rows = result.all()
 
@@ -430,35 +469,126 @@ def contacts(
         table.add_column("Name", style="cyan")
         table.add_column("Role")
         table.add_column("Company")
-        table.add_column("Verified", style="green")
-        table.add_column("LinkedIn", style="dim")
+        table.add_column("Scan age", style="green")
+        table.add_column("Channels", style="dim")
 
         now = datetime.utcnow()
         for i, (dm, comp) in enumerate(rows, 1):
-            age_days = (now - dm.last_seen_at).days
-            freshness = f"{age_days}d ago" if age_days > 0 else "today"
-            freshness_style = "[green]" if age_days < 7 else "[yellow]" if age_days < 30 else "[red]"
+            if comp.last_dm_scan_at:
+                age_days = (now - comp.last_dm_scan_at).days
+                freshness = f"{age_days}d ago" if age_days > 0 else "today"
+                freshness_style = "[green]" if age_days < 7 else "[yellow]" if age_days < 30 else "[red]"
+                fresh_cell = f"{freshness_style}{freshness}[/]"
+            else:
+                fresh_cell = "[dim]never[/]"
+            channels = ", ".join(sorted((dm.contacts or {}).keys())) or "-"
             table.add_row(
                 str(i), dm.full_name,
                 (dm.title_raw or dm.role)[:30],
                 comp.name[:30],
-                f"{freshness_style}{freshness}[/]",
-                (dm.linkedin_url or "-")[:40],
+                fresh_cell,
+                channels[:40],
             )
         console.print(table)
 
     asyncio.run(_run())
 
 
+@app.command("jobs-list")
+def jobs_list(
+    limit: int = typer.Option(50, help="Max rows"),
+    source: str | None = typer.Option(None, help="Filter by source"),
+    max_applicants: int | None = typer.Option(None, help="Skip jobs with > N applicants (None = no filter)"),
+    max_age_days: int | None = typer.Option(None, help="Only jobs posted within N days"),
+    no_orphans: bool = typer.Option(False, help="Skip jobs without a linked company"),
+    output: str | None = typer.Option(None, "-o", help="Optional CSV output"),
+) -> None:
+    """List job_postings from DB with competition filters.
+
+    `applicants_count` is best-effort and only LinkedIn populates it. Posts where
+    the source didn't expose the count are kept (treated as unknown).
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import or_, select
+    from src.messages.db import CompanyRow, JobPostingRow, get_session_maker, init_db
+
+    async def _run():
+        await init_db()
+        Session = get_session_maker()
+        async with Session() as session:
+            stmt = (
+                select(JobPostingRow, CompanyRow)
+                .outerjoin(CompanyRow, CompanyRow.id == JobPostingRow.company_id)
+                .order_by(JobPostingRow.posted_at.desc().nullslast(), JobPostingRow.first_seen_at.desc())
+                .limit(limit)
+            )
+            if source:
+                stmt = stmt.where(JobPostingRow.source == source)
+            if max_applicants is not None:
+                # keep unknowns + those <= cap
+                stmt = stmt.where(or_(JobPostingRow.applicants_count.is_(None),
+                                      JobPostingRow.applicants_count <= max_applicants))
+            if max_age_days is not None:
+                cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+                stmt = stmt.where(JobPostingRow.posted_at >= cutoff)
+            if no_orphans:
+                stmt = stmt.where(JobPostingRow.company_id.is_not(None))
+            result = await session.execute(stmt)
+            rows = result.all()
+
+        table = Table(title=f"Job Postings ({len(rows)})")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Title", style="cyan", min_width=30)
+        table.add_column("Company")
+        table.add_column("Source")
+        table.add_column("Apps", style="green")
+        table.add_column("Age")
+        table.add_column("Salary")
+
+        csv_rows: list[dict] = []
+        now = datetime.utcnow()
+        for i, (jp, comp) in enumerate(rows, 1):
+            apps = str(jp.applicants_count) if jp.applicants_count is not None else "-"
+            age = f"{(now - jp.posted_at).days}d" if jp.posted_at else "-"
+            salary = _format_salary(jp.salary_min, jp.salary_max)
+            comp_name = (comp.name if comp else "[orphan]")[:25]
+            table.add_row(
+                str(i), jp.title[:50], comp_name,
+                jp.source or "-", apps, age, salary,
+            )
+            csv_rows.append({
+                "title": jp.title,
+                "company": comp.name if comp else "",
+                "source": jp.source or "",
+                "url": jp.source_url or "",
+                "applicants": jp.applicants_count if jp.applicants_count is not None else "",
+                "posted_at": jp.posted_at.isoformat() if jp.posted_at else "",
+                "age_days": (now - jp.posted_at).days if jp.posted_at else "",
+                "salary_min": jp.salary_min or "",
+                "salary_max": jp.salary_max or "",
+                "location": jp.location or "",
+                "tech_stack": jp.tech_stack or "",
+            })
+        console.print(table)
+        if output:
+            _save_csv(output, csv_rows)
+
+    asyncio.run(_run())
+
+
 @app.command()
 def stale(
-    max_age_days: int = typer.Option(30, help="Contacts older than N days are stale"),
+    max_age_days: int = typer.Option(30, help="Companies whose DM scan is older than N days are stale"),
     limit: int = typer.Option(50, help="Max rows"),
 ) -> None:
-    """List contacts that haven't been re-verified in N days."""
+    """List companies whose decision makers haven't been re-scanned in N days.
+
+    Freshness is per-company. `hunt` will refresh these on the next run
+    (when skip_fresh_days < age).
+    """
     from datetime import datetime, timedelta
-    from sqlalchemy import select
-    from src.messages.db import CompanyRow, DecisionMakerRow, get_session_maker, init_db
+    from sqlalchemy import or_, select
+    from src.messages.db import CompanyRow, get_session_maker, init_db
 
     async def _run():
         await init_db()
@@ -466,25 +596,27 @@ def stale(
         Session = get_session_maker()
         async with Session() as session:
             stmt = (
-                select(DecisionMakerRow, CompanyRow)
-                .join(CompanyRow)
-                .where(DecisionMakerRow.last_seen_at < cutoff)
-                .order_by(DecisionMakerRow.last_seen_at.asc())
+                select(CompanyRow)
+                .where(or_(CompanyRow.last_dm_scan_at < cutoff, CompanyRow.last_dm_scan_at.is_(None)))
+                .order_by(CompanyRow.last_dm_scan_at.asc().nullsfirst())
                 .limit(limit)
             )
             result = await session.execute(stmt)
-            rows = result.all()
+            rows = result.scalars().all()
 
-        console.print(f"[yellow]Contacts older than {max_age_days} days (need re-scraping):[/]")
+        console.print(f"[yellow]Companies with stale (>{max_age_days}d) or missing DM scan:[/]")
         table = Table()
-        table.add_column("Name", style="cyan")
-        table.add_column("Role")
-        table.add_column("Company")
-        table.add_column("Last verified", style="red")
+        table.add_column("Company", style="cyan")
+        table.add_column("Source")
+        table.add_column("Last DM scan", style="red")
         now = datetime.utcnow()
-        for dm, comp in rows:
-            age = (now - dm.last_seen_at).days
-            table.add_row(dm.full_name, dm.role, comp.name, f"{age} days ago")
+        for r in rows:
+            if r.last_dm_scan_at:
+                age = (now - r.last_dm_scan_at).days
+                cell = f"{age} days ago"
+            else:
+                cell = "never"
+            table.add_row(r.name, r.source or "-", cell)
         console.print(table)
         console.print(f"\nTotal stale: [red]{len(rows)}[/]")
 

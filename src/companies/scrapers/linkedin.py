@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
+from datetime import datetime
 from urllib.parse import quote_plus
 
 import httpx
@@ -18,6 +20,7 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
 }
+_APPLICANT_NUM_RE = re.compile(r"(\d+)\s*applicants?", re.IGNORECASE)
 
 
 class LinkedInScraper(CompanySource):
@@ -50,9 +53,12 @@ class LinkedInScraper(CompanySource):
 
     async def fetch_job_postings(self, criteria: SearchCriteria) -> AsyncIterator[JobPosting]:
         postings = await self._fetch_all(criteria)
+        emitted = 0
 
         for p in postings:
             if not criteria.matches_title(p["title"]):
+                continue
+            if not criteria.matches_competition(p.get("applicants_count"), p.get("posted_at")):
                 continue
 
             yield JobPosting(
@@ -63,9 +69,12 @@ class LinkedInScraper(CompanySource):
                 location=p["location"],
                 source="linkedin",
                 source_url=p["link"],
+                applicants_count=p.get("applicants_count"),
+                posted_at=p.get("posted_at"),
             )
+            emitted += 1
 
-        logger.info("LinkedIn: yielded {} postings", len(postings))
+        logger.info("LinkedIn: yielded {} postings (after competition filter, raw {})", emitted, len(postings))
 
     async def _fetch_all(self, criteria: SearchCriteria) -> list[dict]:
         keywords = " ".join(criteria.tech_stack + criteria.roles)
@@ -105,15 +114,38 @@ def _parse_page(html: str) -> list[dict]:
         company_el = card.select_one(".base-search-card__subtitle")
         location_el = card.select_one(".job-search-card__location")
         link_el = card.select_one("a.base-card__full-link")
+        date_el = card.select_one("time.job-search-card__listdate, time.job-search-card__listdate--new")
+        benefit_el = card.select_one(".job-posting-benefits__text")
 
         if not title_el:
             continue
+
+        posted_at = None
+        if date_el and date_el.get("datetime"):
+            try:
+                posted_at = datetime.fromisoformat(date_el["datetime"])
+            except ValueError:
+                pass
+
+        # Competition signal: LinkedIn shows either "Be an early applicant" (≈low),
+        # "Be among the first 25 applicants" (=25), or N applicants.
+        # Absent means not shown — usually saturated.
+        applicants_count = None
+        if benefit_el:
+            txt = benefit_el.get_text(strip=True).lower()
+            m = _APPLICANT_NUM_RE.search(txt)
+            if m:
+                applicants_count = int(m.group(1))
+            elif "early applicant" in txt:
+                applicants_count = 10  # heuristic: posted recently, very few apps
 
         results.append({
             "title": title_el.text.strip(),
             "company": company_el.text.strip() if company_el else "",
             "location": location_el.text.strip() if location_el else "",
             "link": link_el["href"].split("?")[0] if link_el else None,
+            "posted_at": posted_at,
+            "applicants_count": applicants_count,
         })
 
     return results

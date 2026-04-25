@@ -36,8 +36,10 @@ class PipelineResult:
     contact_name: str
     contact_role: str
     contact_email: str
+    contact_email_guesses: str
     contact_linkedin: str
     contact_twitter: str
+    contact_github: str
     body: str
     channel: str
 
@@ -111,15 +113,6 @@ async def run_pipeline(
             for dm_search in dm_searches:
                 try:
                     async for dm in dm_search.find(company, DEFAULT_ROLES, limit=3):
-                        for enr in enrichments:
-                            try:
-                                if company.website:
-                                    domain = company.website.replace("https://", "").replace("http://", "").split("/")[0]
-                                else:
-                                    domain = company.name.lower().replace(" ", "") + ".com"
-                                dm = await enr.enrich(dm, domain)
-                            except Exception as e:
-                                logger.debug("Enrichment {} failed: {}", enr.source_name, e)
                         dms_for_company.append(dm)
                 except Exception as e:
                     logger.warning("DM search {} failed for {}: {}", dm_search.source_name, company.name, e)
@@ -129,6 +122,17 @@ async def run_pipeline(
 
             # Remember to mark this company as scanned after companies are persisted to DB
             dm_scanned_company_names.add(company.name)
+
+        # Run enrichers on every dm — both freshly fetched and cache-loaded.
+        # Pattern-based enrichers (e.g. email guesser) are idempotent; API enrichers
+        # should themselves no-op when a dm already has the relevant contact channel.
+        domain = _company_domain(company)
+        for dm in dms_for_company:
+            for enr in enrichments:
+                try:
+                    dm = await enr.enrich(dm, domain)
+                except Exception as e:
+                    logger.debug("Enrichment {} failed: {}", enr.source_name, e)
 
         if not dms_for_company:
             dms_for_company = [_empty_dm(company)]
@@ -174,18 +178,16 @@ async def run_pipeline(
             ]
             await repo.save_many(real_messages)
 
-            # Persist companies+contacts even when no body (so jobs can FK to them).
-            # save_many already upserts companies + dms via the messages we just wrote.
-            # For companies that produced no body (no LLM key), persist their dms separately.
+            # Persist company+contact rows for messages that had no body generated
+            # (no LLM key, or LLM call failed). save_many already covered the bodied ones.
+            # Without this, job postings would have no company FK target on cold runs.
             bodyless = [
                 m for m in messages
                 if m.decision_maker.full_name != "Unknown (find manually)" and not m.body
             ]
+            from src.messages.db import get_session_maker
             if bodyless:
-                # Hack: temporarily set a sentinel body so the upsert path runs, then restore.
-                # Simpler: just persist via a contact-only path. We'll write directly.
                 from src.messages.repo import _upsert_company, _upsert_decision_maker
-                from src.messages.db import get_session_maker
                 Session = get_session_maker()
                 async with Session() as session:
                     for m in bodyless:
@@ -194,9 +196,8 @@ async def run_pipeline(
                     await session.commit()
 
             # Persist job postings, linked back to companies by name
-            from src.messages.db import CompanyRow, get_session_maker
+            from src.messages.db import CompanyRow
             from sqlalchemy import select
-            Session = get_session_maker()
             async with Session() as session:
                 names = {c.name for c in companies}
                 result = await session.execute(select(CompanyRow).where(CompanyRow.name.in_(names)))
@@ -225,8 +226,10 @@ async def run_pipeline(
             contact_name=dm.full_name,
             contact_role=dm.title_raw or dm.role.value,
             contact_email=str(dm.email) if dm.email else "",
+            contact_email_guesses=dm.contacts.get("email_guesses", ""),
             contact_linkedin=str(dm.linkedin_url) if dm.linkedin_url else "",
             contact_twitter=dm.twitter_handle or "",
+            contact_github=dm.github_handle or "",
             body=msg.body,
             channel=channel.value,
         ))
@@ -238,6 +241,13 @@ async def run_pipeline(
     _print_summary(results)
 
     return results
+
+
+def _company_domain(company: Company) -> str:
+    if company.website:
+        d = company.website.replace("https://", "").replace("http://", "").replace("www.", "")
+        return d.split("/")[0]
+    return company.name.lower().replace(" ", "") + ".com"
 
 
 def _empty_dm(company: Company):
@@ -255,7 +265,9 @@ def _export_csv(results: list[PipelineResult], filepath: str) -> None:
         writer = csv.writer(f)
         writer.writerow([
             "company", "location", "source", "source_url", "tech_stack",
-            "contact_name", "contact_role", "contact_email", "contact_linkedin", "contact_twitter",
+            "contact_name", "contact_role",
+            "contact_email", "contact_email_guesses",
+            "contact_linkedin", "contact_twitter", "contact_github",
             "relevance_score", "channel", "body",
         ])
         for r in results:
@@ -269,8 +281,10 @@ def _export_csv(results: list[PipelineResult], filepath: str) -> None:
                 r.contact_name,
                 r.contact_role,
                 r.contact_email,
+                r.contact_email_guesses,
                 r.contact_linkedin,
                 r.contact_twitter,
+                r.contact_github,
                 r.message.relevance_score,
                 r.channel,
                 r.body.replace("\n", " "),

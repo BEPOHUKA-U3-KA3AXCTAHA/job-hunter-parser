@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 
 import httpx
 from bs4 import BeautifulSoup
@@ -15,6 +16,7 @@ from src.shared import SearchCriteria, Seniority, TechStack
 _BASE_URL = "https://web3.career"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (job-hunter-parser/0.1)"}
 _SALARY_RE = re.compile(r"\$(\d+)k\s*-\s*\$(\d+)k")
+_AGO_RE = re.compile(r"(\d+)\s*(d|w|mo|m|y|h)", re.IGNORECASE)
 
 _CATEGORY_URLS = {
     "rust": "/rust-jobs",
@@ -80,6 +82,9 @@ class Web3CareerScraper(CompanySource):
             if not criteria.matches_salary(parsed["salary_min"]):
                 continue
 
+            if not criteria.matches_competition(None, parsed.get("posted_at")):
+                continue
+
             yield JobPosting(
                 title=parsed["title"],
                 company_name=parsed["company"] or "",
@@ -92,6 +97,7 @@ class Web3CareerScraper(CompanySource):
                 salary_currency="USD" if parsed["salary_min"] else None,
                 source="web3.career",
                 source_url=f"{_BASE_URL}{parsed['link']}" if parsed["link"] else None,
+                posted_at=parsed.get("posted_at"),
             )
             count += 1
             if count >= criteria.limit_per_source:
@@ -132,6 +138,7 @@ def _parse_row(row) -> dict | None:
 
     title = title_el.text.strip() if title_el else ""
     company = company_el.text.strip() if company_el else tds[1].text.strip()
+    posted_text = tds[2].text.strip() if len(tds) > 2 else ""
     location = tds[3].text.strip() if len(tds) > 3 else ""
     salary_text = tds[4].text.strip() if len(tds) > 4 else ""
     tags_text = tds[5].text.strip() if len(tds) > 5 else ""
@@ -145,6 +152,8 @@ def _parse_row(row) -> dict | None:
         salary_min = int(m.group(1)) * 1000
         salary_max = int(m.group(2)) * 1000
 
+    posted_at = _parse_relative_ago(posted_text)
+
     return {
         "title": title,
         "company": company,
@@ -153,4 +162,27 @@ def _parse_row(row) -> dict | None:
         "salary_max": salary_max,
         "tags": tags,
         "link": link,
+        "posted_at": posted_at,
     }
+
+
+def _parse_relative_ago(text: str) -> datetime | None:
+    """Parse '1d', '2w', '3mo', '1y', '4h' → approximate datetime in the past."""
+    if not text:
+        return None
+    m = _AGO_RE.search(text)
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    delta = {
+        "h": timedelta(hours=n),
+        "d": timedelta(days=n),
+        "w": timedelta(weeks=n),
+        "m": timedelta(days=n * 30),
+        "mo": timedelta(days=n * 30),
+        "y": timedelta(days=n * 365),
+    }.get(unit)
+    if delta is None:
+        return None
+    return datetime.utcnow() - delta

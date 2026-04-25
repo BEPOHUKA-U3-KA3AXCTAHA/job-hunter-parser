@@ -122,6 +122,10 @@ class JobPostingRow(Base):
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active: Mapped[bool] = mapped_column(default=True)
 
+    # Competition signals from the source page (best effort, may be NULL)
+    applicants_count: Mapped[int | None]
+    posted_at: Mapped[datetime | None]
+
 
 # --- Engine & session factory ---
 

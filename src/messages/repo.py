@@ -175,12 +175,20 @@ class SqliteMessageRepository(MessageRepository):
             return result.scalar() or 0
 
     async def save_job_postings(self, postings: list, company_name_to_id: dict) -> int:
-        """Persist job postings, dedup by source_url. Returns count of new rows."""
+        """Persist job postings, dedup by source_url. Returns count of new rows.
+
+        If a posting's company_name isn't in the lookup map, we upsert a stub
+        CompanyRow on the fly so the FK is never NULL. This happens when scrapers'
+        fetch_companies / fetch_job_postings filter sets diverge (e.g. salary filter
+        on jobs only, or limit_per_source cap drift).
+        """
         if not postings:
             return 0
         from datetime import datetime
         Session = get_session_maker()
         new_count = 0
+        # Mutable copy so we can extend with stubs we create
+        name_to_id = dict(company_name_to_id)
         async with Session() as session:
             for jp in postings:
                 if not jp.source_url:
@@ -191,11 +199,23 @@ class SqliteMessageRepository(MessageRepository):
                 row = result.scalar_one_or_none()
                 now = datetime.utcnow()
                 tech_str = ", ".join(sorted(jp.tech_stack.technologies)) if jp.tech_stack.technologies else None
-                company_id = company_name_to_id.get(jp.company_name) if hasattr(jp, "company_name") else None
+
+                jp_name = getattr(jp, "company_name", "") or ""
+                company_id = name_to_id.get(jp_name)
+                if company_id is None and jp_name:
+                    company_id = await _upsert_company_stub(session, jp_name, jp.source, jp.location)
+                    name_to_id[jp_name] = company_id
 
                 if row:
                     row.last_seen_at = now
                     row.is_active = True
+                    if row.company_id is None and company_id:
+                        row.company_id = company_id
+                    # Refresh competition signals if scraper provided new data
+                    if jp.applicants_count is not None:
+                        row.applicants_count = jp.applicants_count
+                    if jp.posted_at is not None and row.posted_at is None:
+                        row.posted_at = jp.posted_at
                 else:
                     row = JobPostingRow(
                         company_id=company_id,
@@ -210,6 +230,8 @@ class SqliteMessageRepository(MessageRepository):
                         salary_currency=jp.salary_currency,
                         source=jp.source if hasattr(jp, "source") else None,
                         source_url=jp.source_url,
+                        applicants_count=jp.applicants_count,
+                        posted_at=jp.posted_at,
                         first_seen_at=now,
                         last_seen_at=now,
                         is_active=True,
@@ -221,6 +243,20 @@ class SqliteMessageRepository(MessageRepository):
 
 
 # --- helpers ---
+
+async def _upsert_company_stub(session, name: str, source: str | None, location: str | None) -> UUID:
+    """Upsert a minimal CompanyRow when we only know the name (from a job posting).
+    Returns the company id. Used by save_job_postings to avoid orphan FKs.
+    """
+    result = await session.execute(select(CompanyRow).where(CompanyRow.name == name))
+    row = result.scalar_one_or_none()
+    if row:
+        return row.id
+    row = CompanyRow(name=name, source=source, location=location, is_hiring=True)
+    session.add(row)
+    await session.flush()
+    return row.id
+
 
 async def _upsert_company(session, company: Company) -> CompanyRow:
     result = await session.execute(select(CompanyRow).where(CompanyRow.name == company.name))

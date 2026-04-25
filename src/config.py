@@ -25,6 +25,8 @@ class Secrets(BaseSettings):
 
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
     apollo_api_key: str = Field(default="", alias="APOLLO_API_KEY")
     apify_api_key: str = Field(default="", alias="APIFY_API_KEY")
     hunter_api_key: str = Field(default="", alias="HUNTER_API_KEY")
