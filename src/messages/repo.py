@@ -324,13 +324,22 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
 
 
 async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
-    """Upsert message at attempt_no=1. Hunt only ever touches attempt 1."""
-    result = await session.execute(
-        select(MessageRow).where(
-            MessageRow.decision_maker_id == dm_id,
-            MessageRow.attempt_no == 1,
-        )
-    )
+    """Upsert message at attempt_no=1, keyed by (job_posting_id, dm_id, attempt_no).
+
+    job_posting_id may be None for bare DM outreach not tied to a specific posting.
+    Hunt only ever touches attempt 1; bumps go through `create_retry`.
+    """
+    jp_id = msg.job_posting.id if msg.job_posting else None
+    where = [
+        MessageRow.decision_maker_id == dm_id,
+        MessageRow.attempt_no == 1,
+    ]
+    if jp_id is None:
+        where.append(MessageRow.job_posting_id.is_(None))
+    else:
+        where.append(MessageRow.job_posting_id == jp_id)
+
+    result = await session.execute(select(MessageRow).where(*where))
     row = result.scalar_one_or_none()
 
     if row:
@@ -344,6 +353,7 @@ async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
         row._is_new = False
     else:
         row = MessageRow(
+            job_posting_id=jp_id,
             decision_maker_id=dm_id,
             attempt_no=1,
             relevance_score=msg.relevance_score,

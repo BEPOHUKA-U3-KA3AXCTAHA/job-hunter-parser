@@ -660,6 +660,153 @@ def retry(
     asyncio.run(_run())
 
 
+@app.command()
+def curate(
+    max_age_days: int = typer.Option(14, help="Skip jobs older than N days"),
+    min_score: int = typer.Option(30, help="Drop pairs with score below this"),
+    top: int = typer.Option(50, help="Generate letters for top-N pairs (after filter+rank)"),
+    generate: bool = typer.Option(True, help="Call LLM to write letters and persist (otherwise just preview)"),
+    dry_run: bool = typer.Option(False, help="Just print the ranked top-N, don't call LLM"),
+    output: str = typer.Option("curated_messages.csv", "-o", help="CSV with the curated set"),
+) -> None:
+    """Filter saturated/stale jobs, rank by candidate fit, generate letters per (job, dm).
+
+    Each surviving job gets ONE letter to its best DM (highest role priority +
+    most contacts). Letters land in messages keyed by (job_posting_id, dm_id, attempt_no=1).
+    """
+    from src.config import get_secrets
+    from src.messages.curator import filter_and_score, load_candidates_from_db
+    from src.messages.db import get_session_maker, init_db
+    from src.messages.models import Message, MessageChannel, MessageStatus
+    from src.messages.repo import _upsert_message
+    from src.shared import CandidateProfile
+
+    async def _run():
+        await init_db()
+        profile = CandidateProfile()
+
+        (bundle,) = await load_candidates_from_db()
+        console.print(f"Loaded [cyan]{len(bundle)}[/] (job, company, dms) bundles from DB")
+
+        pairs = filter_and_score(bundle, profile, max_age_days=max_age_days, min_score=min_score)
+        console.print(f"Curated [green]{len(pairs)}[/] pairs (top score={pairs[0].score if pairs else 0})")
+
+        if not pairs:
+            console.print("[yellow]No pairs survived the filter — relax --max-age-days or --min-score[/]")
+            return
+
+        pairs = pairs[:top]
+
+        # Preview table
+        table = Table(title=f"Top {len(pairs)} curated pairs")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Score", style="green", width=5)
+        table.add_column("Job", style="cyan", min_width=30)
+        table.add_column("Company")
+        table.add_column("DM")
+        table.add_column("Reasons", style="dim")
+        for i, p in enumerate(pairs[:25], 1):
+            table.add_row(
+                str(i), str(p.score),
+                p.job.title[:45],
+                p.company.name[:20],
+                f"{p.dm.full_name} ({p.dm.role.value})"[:30],
+                ", ".join(p.reasons)[:50],
+            )
+        console.print(table)
+        if len(pairs) > 25:
+            console.print(f"  …and {len(pairs) - 25} more")
+
+        # Always dump the ranked set to CSV — useful even without LLM
+        meta_rows = [{
+            "score": p.score,
+            "company": p.company.name,
+            "job_title": p.job.title,
+            "job_url": p.job.source_url or "",
+            "posted_at": p.job.posted_at.isoformat() if p.job.posted_at else "",
+            "applicants": p.job.applicants_count if p.job.applicants_count is not None else "",
+            "dm_name": p.dm.full_name,
+            "dm_role": p.dm.title_raw or p.dm.role.value,
+            "dm_linkedin": p.dm.contacts.get("linkedin", ""),
+            "dm_email_guesses": p.dm.contacts.get("email_guesses", ""),
+            "reasons": ", ".join(p.reasons),
+        } for p in pairs]
+        _save_csv(output, meta_rows)
+
+        if dry_run or not generate:
+            console.print("[yellow]--dry-run / --no-generate: no LLM calls, no DB writes[/]")
+            return
+
+        # LLM gen
+        secrets = get_secrets()
+        if not secrets.anthropic_api_key and not secrets.gemini_api_key and not secrets.groq_api_key:
+            console.print(
+                "[yellow]No LLM key in .env — letters not generated.\n"
+                "  Free option: https://aistudio.google.com/apikey → echo 'GEMINI_API_KEY=...' >> .env\n"
+                "  Curated metadata saved without bodies.[/]"
+            )
+            return
+
+        if secrets.gemini_api_key:
+            from src.messages.llm_gemini import GeminiLLMAdapter
+            llm = GeminiLLMAdapter(secrets.gemini_api_key)
+        elif secrets.groq_api_key:
+            from src.messages.llm_groq import GroqLLMAdapter
+            llm = GroqLLMAdapter(secrets.groq_api_key)
+        else:
+            from src.messages.llm import ClaudeLLMAdapter
+            llm = ClaudeLLMAdapter(secrets.anthropic_api_key)
+        console.print(f"[green]LLM: {llm.__class__.__name__} ({llm.model_name})[/]")
+
+        Session = get_session_maker()
+        rows_for_csv: list[dict] = []
+        saved = 0
+        for i, p in enumerate(pairs, 1):
+            ch = MessageChannel.LINKEDIN if "linkedin" in p.dm.contacts else MessageChannel.EMAIL
+            msg = Message(
+                decision_maker=p.dm,
+                company=p.company,
+                job_posting=p.job,
+                relevance_score=p.score,
+                channel=ch,
+                status=MessageStatus.GENERATED,
+            )
+            try:
+                body = await llm.generate_body(msg, profile.summary)
+            except Exception as e:
+                console.print(f"  [red]LLM failed for {p.dm.full_name} @ {p.company.name}: {e}[/]")
+                continue
+            if not body:
+                continue
+            msg.body = body
+
+            async with Session() as session:
+                row = await _upsert_message(session, p.dm.id, msg)
+                await session.commit()
+            saved += 1
+
+            rows_for_csv.append({
+                "score": p.score,
+                "company": p.company.name,
+                "job_title": p.job.title,
+                "job_url": p.job.source_url or "",
+                "dm_name": p.dm.full_name,
+                "dm_role": p.dm.title_raw or p.dm.role.value,
+                "dm_linkedin": p.dm.contacts.get("linkedin", ""),
+                "dm_email_guesses": p.dm.contacts.get("email_guesses", ""),
+                "channel": ch.value,
+                "reasons": ", ".join(p.reasons),
+                "body": body.replace("\n", " "),
+            })
+            console.print(f"  [{i}/{len(pairs)}] [green]{p.company.name}[/] / {p.dm.full_name} → {len(body)} chars")
+
+        if rows_for_csv:
+            _save_csv(output, rows_for_csv)
+        console.print(f"\n[green]Saved {saved} messages to DB + {output}[/]")
+
+    asyncio.run(_run())
+
+
 @app.command("reset-db")
 def reset_db() -> None:
     """Drop all tables and recreate (WIPES DATA, only for SQLite)."""

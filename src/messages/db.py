@@ -72,17 +72,25 @@ class DecisionMakerRow(Base):
 
 
 class MessageRow(Base):
-    """One outreach attempt per (decision_maker, attempt_no).
+    """One outreach attempt per (job_posting, decision_maker, attempt_no).
 
-    To message the same person again: bump attempt_no via `jhp retry`.
-    Company is reachable via decision_maker.company_id.
+    A DM can be reached for multiple postings (different roles at the same company),
+    and a posting can be pitched to multiple DMs (CEO + CTO + Hiring Manager).
+    Bump attempt_no via `jhp retry` to re-target the same (job, dm) pair.
+
+    Bare DM-targeted outreach (not tied to a specific posting) leaves
+    job_posting_id NULL — the unique key still allows attempt_no bumps.
     """
     __tablename__ = "messages"
     __table_args__ = (
-        UniqueConstraint("decision_maker_id", "attempt_no", name="uq_message_dm_attempt"),
+        UniqueConstraint(
+            "job_posting_id", "decision_maker_id", "attempt_no",
+            name="uq_message_job_dm_attempt",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    job_posting_id: Mapped[UUID | None] = mapped_column(ForeignKey("job_postings.id"), index=True)
     decision_maker_id: Mapped[UUID] = mapped_column(ForeignKey("decision_makers.id"), index=True)
     attempt_no: Mapped[int] = mapped_column(default=1)
 
@@ -161,15 +169,52 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Create tables if missing, then auto-migrate any newly added columns.
+    """Create tables if missing, then auto-migrate columns + unique constraints.
 
-    Lets us evolve models in place without losing data - no reset-db needed for
-    additive changes. Removed columns simply become dead columns in the DB
-    (SQLite has no DROP COLUMN before 3.35; we don't bother).
+    Order matters: drop tables with stale uniques FIRST (so create_all rebuilds them),
+    then run column reconciliation on what remains.
+    Caveat: stale-unique drop wipes data in that table — only safe for tables we
+    know are empty or transient (e.g. messages, before bodies were ever generated).
     """
     async with get_engine().begin() as conn:
+        await conn.run_sync(_drop_stale_unique_tables)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_sync_columns)
+
+
+def _drop_stale_unique_tables(sync_conn) -> None:
+    """If the live unique constraints don't match the model, drop the table.
+
+    SQLite can't ALTER constraints, and recreating with new uniques while keeping
+    data is hairy. We only do this for tables that are safe to wipe:
+    currently `messages` (outreach attempts get regenerated anyway).
+    """
+    from loguru import logger
+    from sqlalchemy import inspect, text
+
+    SAFE_TO_WIPE = {"messages"}
+    inspector = inspect(sync_conn)
+
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in SAFE_TO_WIPE or not inspector.has_table(table_name):
+            continue
+
+        live_uniques = {
+            tuple(sorted(u["column_names"]))
+            for u in inspector.get_unique_constraints(table_name)
+        }
+        model_uniques = {
+            tuple(sorted(c.name for c in constraint.columns))
+            for constraint in table.constraints
+            if constraint.__class__.__name__ == "UniqueConstraint"
+        }
+        if live_uniques != model_uniques:
+            row_count = sync_conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+            logger.warning(
+                "Auto-migration: stale unique on {} (live={}, model={}). Dropping ({} rows).",
+                table_name, live_uniques, model_uniques, row_count,
+            )
+            sync_conn.execute(text(f"DROP TABLE {table_name}"))
 
 
 def _sync_columns(sync_conn) -> None:

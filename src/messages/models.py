@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from src.companies.models import Company
+from src.companies.models import Company, JobPosting
 from src.people.models import DecisionMaker
 
 
@@ -43,6 +43,7 @@ class Message:
 
     decision_maker: DecisionMaker
     company: Company                            # for convenience during pipeline
+    job_posting: JobPosting | None = None       # which posting this outreach references
     attempt_no: int = 1
     relevance_score: int = 0
     status: MessageStatus = MessageStatus.NEW

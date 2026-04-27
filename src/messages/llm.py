@@ -29,15 +29,31 @@ Adapt tone to the channel:
 
 
 class ClaudeLLMAdapter(LLMGenerator):
-    model_name = "claude-sonnet-4-20250514"
+    # Default to Haiku 4.5 — outreach is a templated task, no need for Sonnet/Opus.
+    # Override via constructor when you want higher quality.
+    model_name = "claude-haiku-4-5"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, model: str | None = None) -> None:
         self._client = anthropic.Anthropic(api_key=api_key)
+        if model:
+            self.model_name = model
 
     async def generate_body(self, message: Message, candidate_profile_summary: str) -> str:
         company = message.company
         dm = message.decision_maker
+        jp = message.job_posting
         channel = message.channel.value if message.channel else "linkedin"
+
+        job_block = ""
+        if jp:
+            job_block = f"""
+SPECIFIC JOB OPENING (mention it directly in the message):
+- Title: {jp.title}
+- Tech tags: {', '.join(jp.tech_stack.technologies) if jp.tech_stack.technologies else 'unknown'}
+- Seniority: {jp.seniority.value if jp.seniority else 'unknown'}
+- Posted: {jp.posted_at.strftime('%Y-%m-%d') if jp.posted_at else 'unknown'}
+- URL: {jp.source_url or '(no link)'}
+"""
 
         user_prompt = f"""\
 Generate a {channel} outreach message.
@@ -51,7 +67,7 @@ TARGET:
 - Company tech: {', '.join(company.tech_stack.technologies) if company.tech_stack.technologies else 'unknown'}
 - Company location: {company.location or 'unknown'}
 - Job source: {company.source or 'unknown'}
-
+{job_block}
 Write the message now. Just the message text, nothing else.
 """
         try:
