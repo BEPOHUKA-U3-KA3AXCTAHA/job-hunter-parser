@@ -7,6 +7,7 @@ from datetime import datetime
 import httpx
 from loguru import logger
 
+from src.companies.email_extract import extract_apply_email
 from src.companies.models import Company, JobPosting
 from src.companies.ports import CompanySource
 from src.shared import SearchCriteria, Seniority, TechStack
@@ -76,6 +77,11 @@ class RemoteOKScraper(CompanySource):
             if not criteria.matches_competition(None, posted_at):
                 continue
 
+            apply_email = extract_apply_email(
+                f"{job.get('description','')} {job.get('apply_url','')}",
+                job.get("company"),
+            )
+
             yield JobPosting(
                 title=title,
                 company_name=job.get("company", ""),
@@ -90,6 +96,7 @@ class RemoteOKScraper(CompanySource):
                 source="remoteok",
                 source_url=job.get("url"),
                 posted_at=posted_at,
+                apply_email=apply_email,
             )
             count += 1
             if count >= criteria.limit_per_source:

@@ -216,6 +216,8 @@ class SqliteMessageRepository(MessageRepository):
                         row.applicants_count = jp.applicants_count
                     if jp.posted_at is not None and row.posted_at is None:
                         row.posted_at = jp.posted_at
+                    if jp.apply_email and not row.apply_email:
+                        row.apply_email = jp.apply_email
                 else:
                     row = JobPostingRow(
                         company_id=company_id,
@@ -232,6 +234,7 @@ class SqliteMessageRepository(MessageRepository):
                         source_url=jp.source_url,
                         applicants_count=jp.applicants_count,
                         posted_at=jp.posted_at,
+                        apply_email=jp.apply_email,
                         first_seen_at=now,
                         last_seen_at=now,
                         is_active=True,

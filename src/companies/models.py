@@ -52,6 +52,11 @@ class JobPosting:
     applicants_count: int | None = None
     posted_at: datetime | None = None
 
+    # Real apply-to email when the posting (or its detail page) exposes one.
+    # Usually careers@/jobs@/hr@<companydomain> — verified, near-zero bounce.
+    # Distinct from contacts.email_guess (which is a pattern guess for the DM).
+    apply_email: str | None = None
+
     id: UUID = field(default_factory=uuid4)
     discovered_at: datetime = field(default_factory=datetime.utcnow)
 

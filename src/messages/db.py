@@ -133,6 +133,8 @@ class JobPostingRow(Base):
     # Competition signals from the source page (best effort, may be NULL)
     applicants_count: Mapped[int | None]
     posted_at: Mapped[datetime | None]
+    # Real apply-to email when the source exposed one (careers@/jobs@/hr@/...)
+    apply_email: Mapped[str | None] = mapped_column(String(200))
 
 
 # --- Engine & session factory ---
