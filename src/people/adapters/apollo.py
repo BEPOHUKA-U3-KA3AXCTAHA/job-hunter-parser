@@ -28,6 +28,10 @@ _ROLE_TITLES = {
 
 
 class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
+    """Apollo.io. Free tier returns 403 on the people-search/match endpoints,
+    so once we see one 403 we stop trying for the rest of the run — otherwise
+    every call generates noise in the log.
+    """
     source_name = "apollo"
 
     def __init__(self, api_key: str) -> None:
@@ -37,6 +41,16 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
             "Cache-Control": "no-cache",
             "X-Api-Key": api_key,
         }
+        self._disabled_reason: str | None = None
+
+    def _disable(self, reason: str) -> None:
+        if self._disabled_reason is None:
+            self._disabled_reason = reason
+            logger.warning(
+                "Apollo disabled for the rest of this run ({}). Likely free-tier "
+                "blocks API access; subsequent calls will silently no-op.",
+                reason,
+            )
 
     async def find(
         self,
@@ -44,6 +58,8 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
         roles: list[DecisionMakerRole],
         limit: int = 5,
     ) -> AsyncIterator[DecisionMaker]:
+        if self._disabled_reason:
+            return
         title_keywords = []
         for role in roles:
             title_keywords.extend(_ROLE_TITLES.get(role, []))
@@ -67,6 +83,12 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
                 )
                 resp.raise_for_status()
                 data = resp.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (401, 402, 403):
+                    self._disable(f"HTTP {e.response.status_code} on search")
+                else:
+                    logger.warning("Apollo search failed for {}: {}", company.name, e)
+                return
             except httpx.HTTPError as e:
                 logger.warning("Apollo search failed for {}: {}", company.name, e)
                 return
@@ -96,6 +118,8 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
             )
 
     async def enrich(self, decision_maker: DecisionMaker, company_domain: str) -> DecisionMaker:
+        if self._disabled_reason:
+            return decision_maker
         if decision_maker.email and decision_maker.linkedin_url:
             return decision_maker
 
@@ -112,6 +136,12 @@ class ApolloAdapter(DecisionMakerSearch, ContactEnrichment):
                 )
                 resp.raise_for_status()
                 data = resp.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (401, 402, 403):
+                    self._disable(f"HTTP {e.response.status_code} on match")
+                else:
+                    logger.warning("Apollo enrich failed: {}", e)
+                return decision_maker
             except httpx.HTTPError as e:
                 logger.warning("Apollo enrich failed: {}", e)
                 return decision_maker
