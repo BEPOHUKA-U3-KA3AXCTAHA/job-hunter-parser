@@ -662,9 +662,10 @@ def retry(
 
 @app.command()
 def curate(
-    max_age_days: int = typer.Option(14, help="Skip jobs older than N days"),
+    max_age_days: int = typer.Option(30, help="Skip jobs older than N days"),
     min_score: int = typer.Option(30, help="Drop pairs with score below this"),
     top: int = typer.Option(50, help="Generate letters for top-N pairs (after filter+rank)"),
+    dms_per_job: int = typer.Option(2, help="Pitch each job to up to K DMs (CTO + Founder, etc.)"),
     generate: bool = typer.Option(True, help="Call LLM to write letters and persist (otherwise just preview)"),
     dry_run: bool = typer.Option(False, help="Just print the ranked top-N, don't call LLM"),
     output: str = typer.Option("curated_messages.csv", "-o", help="CSV with the curated set"),
@@ -688,7 +689,12 @@ def curate(
         (bundle,) = await load_candidates_from_db()
         console.print(f"Loaded [cyan]{len(bundle)}[/] (job, company, dms) bundles from DB")
 
-        pairs = filter_and_score(bundle, profile, max_age_days=max_age_days, min_score=min_score)
+        pairs = filter_and_score(
+            bundle, profile,
+            max_age_days=max_age_days,
+            min_score=min_score,
+            dms_per_job=dms_per_job,
+        )
         console.print(f"Curated [green]{len(pairs)}[/] pairs (top score={pairs[0].score if pairs else 0})")
 
         if not pairs:

@@ -39,17 +39,27 @@ _TITLE_HARD_REJECT = {
     "specialist", "associate ", " analyst", "consultant", "advisor",
     "ios ", "android ", "mobile ", "angular", "react native", "swift",
     "kotlin developer", "flutter", "unity", "game", "3d artist",
-    "data analyst", "data scientist", "data engineer", "data ",
-    "ml engineer", "ai engineer", "machine learning", "research",
-    "java ", " java", "scala", "ruby ", "rails", "php ", "salesforce",
-    "operations", "logistics", "delivery", "project manager",
-    "head of", "vp ", "director", "chief ", "strategy", "treasury",
-    "investor relations", "talent", "people ",
+    "data analyst", "data scientist",
+    "machine learning research", "ml research", "research engineer",
+    "scala", "ruby ", "rails", "php ", "salesforce",
+    "operations manager", "logistics", "delivery manager", "project manager",
+    "strategy", "treasury", "investor relations", "talent", "people ",
     "workday", "salesforce", "sap ", "oracle erp", "netsuite",
     "solutions engineer", "sales engineer", "pre-sales",
     "offensive security", "penetration tester", "appsec",
     "technical writer", "documentation",
+    # leadership roles only when paired with a non-eng domain (handled below)
 }
+
+# Phrases that, when present alongside a leadership keyword, mean it's NOT
+# eng leadership ("Head of Marketing", "VP of Sales", etc.). When alongside
+# eng keywords, the role is fine ("Head of Engineering").
+_LEADERSHIP_NON_ENG = {
+    "marketing", "sales", "people", "talent", "finance", "legal",
+    "compliance", "operations", "product management", "design",
+    "growth", "community", "support", "customer", "hr ",
+}
+_LEADERSHIP_TOKENS = {"head of ", "vp of ", "vp ", "director of ", "director ", "chief "}
 
 # Title MUST contain one of these or it's not engineering for our candidate
 _TITLE_MUST_CONTAIN_ANY = {
@@ -113,13 +123,15 @@ async def load_candidates_from_db() -> tuple[list[tuple[JobPostingRow, CompanyRo
 def filter_and_score(
     bundle: list[tuple[JobPostingRow, CompanyRow, list[DecisionMakerRow]]],
     profile: CandidateProfile,
-    max_age_days: int = 14,
+    max_age_days: int = 30,
     min_score: int = 30,
+    dms_per_job: int = 2,
 ) -> list[CuratedPair]:
     """Apply hard filters and produce ranked CuratedPair list.
 
-    For each surviving job we pick the best DM (by role priority) — outreach
-    pairs are 1-to-1 with jobs, not the cartesian product.
+    For each surviving job we pick the top-K DMs (by role priority + has linkedin),
+    so a single posting can be pitched to e.g. CTO + Founder. Set dms_per_job=1
+    to fall back to the old single-best behaviour.
     """
     pairs: list[CuratedPair] = []
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
@@ -139,6 +151,12 @@ def filter_and_score(
         if any(bad in title_l for bad in _TITLE_HARD_REJECT):
             rejected_junk += 1
             continue
+        # Reject leadership titles ONLY when paired with a non-eng domain
+        # ("Head of Marketing" out, "Head of Engineering" stays in).
+        if any(tok in title_l for tok in _LEADERSHIP_TOKENS):
+            if any(neg in title_l for neg in _LEADERSHIP_NON_ENG):
+                rejected_junk += 1
+                continue
         if not any(must in title_l for must in _TITLE_MUST_CONTAIN_ANY):
             rejected_junk += 1
             continue
@@ -147,28 +165,31 @@ def filter_and_score(
             rejected_no_dm += 1
             continue
 
-        # Pick best DM: highest role.priority, prefer ones with verified contacts
-        best_dm = max(
+        # Pick top-K DMs by role priority + linkedin presence
+        ranked_dms = sorted(
             dms,
             key=lambda d: (
-                _role_priority(d.role),
-                len(d.contacts or {}),
-                d.full_name,  # tiebreak deterministically
+                -_role_priority(d.role),
+                -int("linkedin" in (d.contacts or {})),
+                d.full_name,
             ),
-        )
+        )[:max(1, dms_per_job)]
 
-        score, reasons = _score_pair(jp, comp, best_dm, candidate_tech)
-        if score < min_score:
+        any_kept = False
+        for dm in ranked_dms:
+            score, reasons = _score_pair(jp, comp, dm, candidate_tech)
+            if score < min_score:
+                continue
+            any_kept = True
+            pairs.append(CuratedPair(
+                job=_jp_row_to_domain(jp, comp),
+                company=_company_row_to_domain(comp),
+                dm=_dm_row_to_domain(dm),
+                score=score,
+                reasons=reasons,
+            ))
+        if not any_kept:
             rejected_low += 1
-            continue
-
-        pairs.append(CuratedPair(
-            job=_jp_row_to_domain(jp, comp),
-            company=_company_row_to_domain(comp),
-            dm=_dm_row_to_domain(best_dm),
-            score=score,
-            reasons=reasons,
-        ))
 
     pairs.sort(key=lambda p: -p.score)
     logger.info(
