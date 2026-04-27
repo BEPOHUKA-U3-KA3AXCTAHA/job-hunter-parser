@@ -1,10 +1,20 @@
 """Pattern-based email guesser. Free, no API.
 
-Given a DM's full name + company domain, generates the most common email patterns
-used by tech companies. Stored under contacts['email_guesses'] (comma-separated)
-so it stays distinct from a verified contacts['email'].
+For each DM with a known name + company domain we produce ONE most-likely
+address (`contacts["email_guess"]`) plus the alternates kept separately
+(`contacts["email_alts"]`) for a verifier to whittle down later.
 
-Use a verifier (Hunter.io free tier, MX probe, etc.) downstream to narrow the list.
+Why one primary: outreach should hit a single inbox, not blast 5 patterns and
+eat the bounce-rate hit on the sender's domain reputation.
+
+Tech-org pattern frequency (Hunter.io industry stats):
+  firstname.lastname@   ~45%   ← our default primary
+  firstname@            ~25%   (smaller startups)
+  flastname@            ~15%   (banks / legacy enterprise)
+  firstnamelastname@    ~10%
+  firstname_lastname@   ~5%
+
+Use a verifier downstream (Hunter.io / MX probe) before actually sending.
 """
 from __future__ import annotations
 
@@ -16,38 +26,51 @@ from src.people.ports import ContactEnrichment
 _NAME_CLEAN = re.compile(r"[^a-z\-]")
 
 
+def primary_guess(full_name: str, company_domain: str) -> str | None:
+    """Single most-likely email for a tech org. None when we can't form one."""
+    domain = _normalize_domain(company_domain)
+    if not domain:
+        return None
+    first, last = _split_name(full_name)
+    if not first:
+        return None
+    if last:
+        return f"{first}.{last}@{domain}"
+    return f"{first}@{domain}"
+
+
+def alternate_guesses(full_name: str, company_domain: str) -> list[str]:
+    """Backup patterns ordered by tech-industry frequency. Excludes the primary."""
+    domain = _normalize_domain(company_domain)
+    if not domain:
+        return []
+    first, last = _split_name(full_name)
+    if not first or not last:
+        return []
+    return [
+        f"{first}@{domain}",
+        f"{first[0]}{last}@{domain}",
+        f"{first}{last}@{domain}",
+        f"{first}_{last}@{domain}",
+    ]
+
+
 class EmailPatternGuesser(ContactEnrichment):
     source_name = "email_pattern"
 
     async def enrich(self, decision_maker: DecisionMaker, company_domain: str) -> DecisionMaker:
-        if not company_domain or "@" in (decision_maker.contacts.get("email") or ""):
-            return decision_maker  # already verified, skip
-
-        domain = _normalize_domain(company_domain)
-        if not domain:
+        # If the DM already has a verified email, never overwrite it
+        if (decision_maker.contacts.get("email") or "").count("@") == 1:
             return decision_maker
 
-        first, last = _split_name(decision_maker.full_name)
-        if not first:
+        primary = primary_guess(decision_maker.full_name, company_domain)
+        if not primary:
             return decision_maker
 
-        guesses: list[str] = []
-        if last:
-            guesses = [
-                f"{first}@{domain}",
-                f"{first}.{last}@{domain}",
-                f"{first[0]}{last}@{domain}",
-                f"{first}{last}@{domain}",
-                f"{first}_{last}@{domain}",
-            ]
-        else:
-            guesses = [f"{first}@{domain}"]
-
-        # Dedup, preserve order
-        seen: set[str] = set()
-        uniq = [g for g in guesses if not (g in seen or seen.add(g))]
-
-        decision_maker.contacts["email_guesses"] = ", ".join(uniq)
+        decision_maker.contacts["email_guess"] = primary
+        alts = alternate_guesses(decision_maker.full_name, company_domain)
+        if alts:
+            decision_maker.contacts["email_alts"] = ", ".join(alts)
         return decision_maker
 
 

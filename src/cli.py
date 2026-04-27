@@ -734,7 +734,7 @@ def curate(
             "dm_name": p.dm.full_name,
             "dm_role": p.dm.title_raw or p.dm.role.value,
             "dm_linkedin": p.dm.contacts.get("linkedin", ""),
-            "dm_email_guesses": p.dm.contacts.get("email_guesses", ""),
+            "dm_email_guess": p.dm.contacts.get("email_guess", ""),
             "reasons": ", ".join(p.reasons),
         } for p in pairs]
         _save_csv(output, meta_rows)
@@ -799,7 +799,7 @@ def curate(
                 "dm_name": p.dm.full_name,
                 "dm_role": p.dm.title_raw or p.dm.role.value,
                 "dm_linkedin": p.dm.contacts.get("linkedin", ""),
-                "dm_email_guesses": p.dm.contacts.get("email_guesses", ""),
+                "dm_email_guess": p.dm.contacts.get("email_guess", ""),
                 "channel": ch.value,
                 "reasons": ", ".join(p.reasons),
                 "body": body.replace("\n", " "),

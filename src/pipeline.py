@@ -36,7 +36,7 @@ class PipelineResult:
     contact_name: str
     contact_role: str
     contact_email: str
-    contact_email_guesses: str
+    contact_email_guess: str
     contact_linkedin: str
     contact_twitter: str
     contact_github: str
@@ -226,7 +226,7 @@ async def run_pipeline(
             contact_name=dm.full_name,
             contact_role=dm.title_raw or dm.role.value,
             contact_email=str(dm.email) if dm.email else "",
-            contact_email_guesses=dm.contacts.get("email_guesses", ""),
+            contact_email_guess=dm.contacts.get("email_guess", ""),
             contact_linkedin=str(dm.linkedin_url) if dm.linkedin_url else "",
             contact_twitter=dm.twitter_handle or "",
             contact_github=dm.github_handle or "",
@@ -266,7 +266,7 @@ def _export_csv(results: list[PipelineResult], filepath: str) -> None:
         writer.writerow([
             "company", "location", "source", "source_url", "tech_stack",
             "contact_name", "contact_role",
-            "contact_email", "contact_email_guesses",
+            "contact_email", "contact_email_guess",
             "contact_linkedin", "contact_twitter", "contact_github",
             "relevance_score", "channel", "body",
         ])
@@ -281,7 +281,7 @@ def _export_csv(results: list[PipelineResult], filepath: str) -> None:
                 r.contact_name,
                 r.contact_role,
                 r.contact_email,
-                r.contact_email_guesses,
+                r.contact_email_guess,
                 r.contact_linkedin,
                 r.contact_twitter,
                 r.contact_github,
