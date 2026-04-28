@@ -813,6 +813,40 @@ def curate(
     asyncio.run(_run())
 
 
+@app.command("send-outreach")
+def send_outreach_cmd(
+    limit: int = typer.Option(5, help="Max applies to send this batch (hard cap MAX_SEND_PER_BATCH=5)"),
+    dry_run: bool = typer.Option(True, help="Just print what WOULD be sent, no browser"),
+    headless: bool = typer.Option(True, help="Run browser headless (no visible window)"),
+) -> None:
+    """Phase 1: send DM outreach automatically via Camoufox + LinkedIn.
+
+    Pulls applies WHERE flank='dm_outreach' AND sent_at IS NULL AND status IN ('generated', 'queued').
+    For each, opens the DM's LinkedIn profile and sends Message (1st-degree)
+    or Connect+note (2nd/3rd degree).
+
+    Hard guardrails (cannot bypass):
+      - 30/day cap
+      - 5/batch cap
+      - 2-3 minutes between sends
+
+    Stops batch immediately if LinkedIn shows verification/CAPTCHA.
+
+    First-time setup:
+      1. Make sure Firefox has a logged-in LinkedIn session (we read cookies)
+      2. Run with --no-headless once to confirm Camoufox lands on /feed/
+    """
+    from src.automation.send_orchestrator import run_send_batch
+    from src.messages.db import init_db
+
+    async def _run():
+        await init_db()
+        stats = await run_send_batch(limit=limit, dry_run=dry_run, headless=headless)
+        console.print(f"\n[green]Done.[/] Stats: {stats}")
+
+    asyncio.run(_run())
+
+
 @app.command("reset-db")
 def reset_db() -> None:
     """Drop all tables and recreate (WIPES DATA, only for SQLite)."""

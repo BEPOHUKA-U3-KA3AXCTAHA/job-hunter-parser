@@ -107,9 +107,24 @@ src/automation/
 ├── firefox_cookies.py              # Read user's real Firefox cookies (works while FF is running, copies the locked sqlite first)
 ├── browser.py                       # BrowserSession context manager (Camoufox + persistent profile + cookie injection)
 ├── llm_pool.py                      # ClaudeCLIPool — concurrent `claude -p ...` subprocess pool with rate-limit guard
-└── (future) linkedin_outreach.py    # Phase 1 — LinkedIn DOM automation
+├── linkedin_outreach.py            # Phase 1 — LinkedIn DOM automation: open profile → Connect/Message → fill + send
+├── send_orchestrator.py            # Pulls pending applies → calls linkedin_outreach → marks sent_at + status
 └── (future) ats/                    # Phase 2 — ATS form fillers
 ```
+
+**LinkedIn DM outreach (Phase 1, Flank 2):**
+- `send_outreach(page, profile_url, note, body)` → tries Message button first (1st-degree / Open Profile), falls back to Connect+note (2nd/3rd degree). Detects "Add a note" modal variants. Returns `OutreachResult` with outcome enum.
+- Anti-ban: detects rate-limit / verify / restricted account pages, returns `BLOCKED_RATE_LIMIT` to abort batch immediately.
+- `make_short_note(body, name)` — algorithmic trim of ~700-char body to ≤300-char invite note (no LLM needed).
+
+**Hard guardrails (in send_orchestrator.py):**
+- `MAX_SENT_PER_DAY = 30` — combined Connect + Message per 24h
+- `MAX_SEND_PER_BATCH = 5` — per CLI invocation
+- `MIN_GAP_BETWEEN_SENDS_S = 120` — 2-min minimum between actions
+
+**CLI:** `jhp send-outreach --limit N [--dry-run | --no-dry-run] [--headless | --no-headless]`
+- Default is `--dry-run` so first run shows what WOULD be sent (URL + auto-generated note + body length) without opening browser.
+- After dry-run inspection, run with `--no-dry-run --no-headless --limit 1` to test ONE live send with visible browser.
 
 **Browser stack:** Camoufox (anti-detect Firefox, MIT) driven via Playwright async API. `humanize=True` adds bezier mouse curves + reading-speed pauses. Persistent profile at `~/.jhp/camoufox-profile`. LinkedIn cookies imported once from `~/.mozilla/firefox/<profile>/cookies.sqlite` so we don't trigger "new device" alerts on first use.
 
