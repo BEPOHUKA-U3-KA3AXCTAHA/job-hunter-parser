@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>JHP Easy Apply</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; padding: 12px; width: 280px; }
+    h1 { font-size: 14px; margin: 0 0 10px; }
+    label { display: block; margin: 8px 0 4px; font-size: 12px; }
+    input { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+    button { width: 100%; padding: 8px; margin-top: 12px; font-size: 13px; cursor: pointer; }
+    .stats { margin-top: 12px; font-size: 12px; color: #555; }
+    .ok { color: #2c8c2c; }
+    .err { color: #c33; }
+  </style>
+</head>
+<body>
+  <h1>JHP Easy Apply</h1>
+  <label>Limit (max 5/batch, 30/day):</label>
+  <input id="limit" type="number" value="1" min="1" max="5">
+  <label>Phone for forms:</label>
+  <input id="phone" type="tel" placeholder="+382 12345 67">
+  <button id="start">Start auto-apply</button>
+  <div id="status" class="stats">idle</div>
+  <script src="popup.js"></script>
+</body>
+</html>

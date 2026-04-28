@@ -813,6 +813,67 @@ def curate(
     asyncio.run(_run())
 
 
+@app.command("apply")
+def apply_cmd(
+    keywords: str = typer.Option("rust senior remote,python backend remote senior", help="Comma-separated keyword sets to search"),
+    limit: int = typer.Option(1, help="How many real Easy Apply submissions this batch (cap MAX=5)"),
+    headless: bool = typer.Option(True, help="Run Firefox headless (recommended)"),
+    phone: str = typer.Option("", help="Phone for forms (empty = leave unfilled, may fail required-field check)"),
+) -> None:
+    """LinkedIn Easy Apply via Selenium-driven REAL Firefox.
+
+    Uses a copy of your Firefox profile so LinkedIn sees your real session
+    (full cookies, fingerprint matches what they expect from your account).
+
+    Conservative: 30/day, 5/batch, 90+s gap between applies. Auto-aborts on
+    LinkedIn warning pages (CAPTCHA / verify / restricted).
+    """
+    from src.automation.selenium_orchestrator import run_batch
+
+    async def _run():
+        kws = [k.strip() for k in keywords.split(",") if k.strip()]
+        result = await run_batch(kws, limit=limit, headless=headless, profile_phone=phone)
+        console.print(f"\n[green]Done.[/] {result}")
+
+    asyncio.run(_run())
+
+
+@app.command("easy-apply")
+def easy_apply_cmd(
+    keywords: str = typer.Option("rust senior remote", help="LinkedIn search keywords"),
+    limit: int = typer.Option(5, help="Max applies this batch (hard cap MAX_APPLIES_PER_BATCH=5)"),
+    headless: bool = typer.Option(False, help="Run browser headless (False = you watch the bot)"),
+    phone: str = typer.Option("", help="Phone number to fill in form (empty = leave blank, may fail required-field check)"),
+) -> None:
+    """Phase 2: LinkedIn Easy Apply auto-applier.
+
+    Goes to LinkedIn jobs search with f_AL=true (Easy Apply only), past-week,
+    remote, your keywords. For each unapplied job:
+      - Click Easy Apply
+      - Fill phone if asked
+      - Click Continue/Review/Submit through up to 3 modal pages
+      - Skip if too many custom questions or red error fields appear
+
+    Hard guardrails (cannot bypass):
+      30/day, 5/batch, 90+sec gap between applies.
+
+    Stops batch immediately on CAPTCHA / verify / restricted-account warning.
+
+    Selectors copied from wodsuz/EasyApplyJobsBot (battle-tested aria-label-based).
+    """
+    from src.automation.easy_apply_orchestrator import run_easy_apply_batch
+    from src.messages.db import init_db
+
+    async def _run():
+        await init_db()
+        stats = await run_easy_apply_batch(
+            keywords=keywords, limit=limit, headless=headless, profile_phone=phone,
+        )
+        console.print(f"\n[green]Done.[/] Stats: {stats}")
+
+    asyncio.run(_run())
+
+
 @app.command("send-outreach")
 def send_outreach_cmd(
     limit: int = typer.Option(5, help="Max applies to send this batch (hard cap MAX_SEND_PER_BATCH=5)"),

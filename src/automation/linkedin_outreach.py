@@ -31,20 +31,28 @@ from src.automation.browser import human_sleep
 # (LinkedIn A/B-tests these; new variants get prepended).
 
 _CONNECT_BUTTON_SELECTORS = [
-    'button[aria-label*="Invite"][aria-label*="connect"]',
-    'button.pvs-profile-actions__action[aria-label*="connect" i]',
-    'main button:has-text("Connect")',
+    # Main profile hero — scoped tightly so we don't click sidebar
+    # "People you may know" Connect buttons
+    'section.pv-top-card button[aria-label*="Invite"][aria-label*="connect" i]',
+    'section.pv-top-card button:has-text("Connect")',
+    '.ph5 button[aria-label*="Invite"][aria-label*="connect" i]',
+    '.ph5 button:has-text("Connect")',
+    # Fallback: ANY "Invite X to connect" — but ONLY first one in main area
+    'main section button[aria-label*="Invite"][aria-label*="connect" i]',
 ]
 
 _MESSAGE_BUTTON_SELECTORS = [
-    'button[aria-label^="Message "]',
-    'button.message-anywhere-button',
-    'main button:has-text("Message")',
+    'section.pv-top-card button[aria-label^="Message "]',
+    'section.pv-top-card button:has-text("Message")',
+    '.ph5 button[aria-label^="Message "]',
+    '.ph5 button:has-text("Message")',
+    'main section button[aria-label^="Message "]',
 ]
 
 _MORE_BUTTON_SELECTORS = [
-    'button[aria-label="More actions"]',
-    'main button:has-text("More")',
+    'section.pv-top-card button[aria-label="More actions"]',
+    '.ph5 button[aria-label="More actions"]',
+    'main section button[aria-label="More actions"]',
 ]
 
 # Inside the "Send invitation" modal
