@@ -13,7 +13,7 @@ from rich.table import Table
 from src.companies.models import Company, JobPosting
 from src.companies.ports import CompanySource
 from src.messages.models import Message, MessageChannel, MessageStatus
-from src.messages.ports import LLMGenerator, MessageRepository
+from src.messages.ports import LLMGenerator, ApplyRepository
 from src.messages.scorer import RelevanceScorer
 from src.people.models import DecisionMakerRole
 from src.people.ports import ContactEnrichment, DecisionMakerSearch
@@ -54,7 +54,7 @@ async def run_pipeline(
     channel: MessageChannel = MessageChannel.LINKEDIN,
     output_csv: str = "messages_full.csv",
     skip_fresh_days: int = 30,
-    repo: MessageRepository | None = None,
+    repo: ApplyRepository | None = None,
 ) -> list[PipelineResult]:
     """Runs the full pipeline.
 

@@ -220,7 +220,7 @@ def hunt(
     """
     from src.config import get_secrets, load_app_config
     from src.messages.models import MessageChannel
-    from src.messages.repo import SqliteMessageRepository
+    from src.messages.repo import SqliteApplyRepository
     from src.pipeline import run_pipeline
     from src.shared import CandidateProfile, SearchCriteria
 
@@ -309,7 +309,7 @@ def hunt(
             console.print("[yellow]No LLM key (GEMINI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY) — message bodies will be empty[/]")
 
         ch = MessageChannel(eff_channel)
-        repo = SqliteMessageRepository()
+        repo = SqliteApplyRepository()
 
         from src.messages.db import init_db
         await init_db()
@@ -334,7 +334,7 @@ def hunt(
 def stats() -> None:
     """Show DB statistics."""
     from sqlalchemy import func, select
-    from src.messages.db import CompanyRow, DecisionMakerRow, MessageRow, get_session_maker, init_db
+    from src.messages.db import CompanyRow, DecisionMakerRow, ApplyRow, get_session_maker, init_db
 
     async def _run():
         await init_db()
@@ -342,7 +342,7 @@ def stats() -> None:
         async with Session() as session:
             total_companies = (await session.execute(select(func.count(CompanyRow.id)))).scalar() or 0
             total_dms = (await session.execute(select(func.count(DecisionMakerRow.id)))).scalar() or 0
-            total_leads = (await session.execute(select(func.count(MessageRow.id)))).scalar() or 0
+            total_leads = (await session.execute(select(func.count(ApplyRow.id)))).scalar() or 0
 
             # Companies with/without contacts
             with_contacts = (await session.execute(
@@ -633,18 +633,18 @@ def retry(
     Bumps attempt_no on each. Use after status=no_reply to re-target stale leads.
     """
     from sqlalchemy import select
-    from src.messages.db import MessageRow, get_session_maker, init_db
-    from src.messages.repo import SqliteMessageRepository
+    from src.messages.db import ApplyRow, get_session_maker, init_db
+    from src.messages.repo import SqliteApplyRepository
 
     async def _run():
         await init_db()
-        repo = SqliteMessageRepository()
+        repo = SqliteApplyRepository()
         Session = get_session_maker()
         created = 0
         async with Session() as session:
             # Find existing leads with given status, only the latest attempt per dm
             result = await session.execute(
-                select(MessageRow).where(MessageRow.status == status).limit(limit)
+                select(ApplyRow).where(ApplyRow.status == status).limit(limit)
             )
             leads = result.scalars().all()
             console.print(f"Found {len(leads)} leads with status='{status}'")

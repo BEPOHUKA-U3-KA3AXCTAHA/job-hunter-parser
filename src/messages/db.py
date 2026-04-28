@@ -68,24 +68,24 @@ class DecisionMakerRow(Base):
 
     # No dates on dm — freshness is tracked at company level via last_dm_scan_at.
     company: Mapped[CompanyRow] = relationship(back_populates="decision_makers")
-    messages: Mapped[list[MessageRow]] = relationship(back_populates="decision_maker")
+    applies: Mapped[list[ApplyRow]] = relationship(back_populates="decision_maker")
 
 
-class MessageRow(Base):
+class ApplyRow(Base):
     """One outreach attempt per (job_posting, decision_maker, attempt_no).
 
-    A DM can be reached for multiple postings (different roles at the same company),
-    and a posting can be pitched to multiple DMs (CEO + CTO + Hiring Manager).
-    Bump attempt_no via `jhp retry` to re-target the same (job, dm) pair.
+    Two flanks share this table:
+      - flank='dm_outreach' — direct contact to a specific person (CEO/CTO via LinkedIn/email/telegram)
+      - flank='mass_apply'  — submission to a posting's apply form (Easy Apply / Workday / Greenhouse / careers@)
 
-    Bare DM-targeted outreach (not tied to a specific posting) leaves
-    job_posting_id NULL — the unique key still allows attempt_no bumps.
+    For mass_apply, decision_maker_id points to a SYNTHETIC "Hiring Team" DM
+    (role=HR, contacts={email: careers@...}) — keeps the (job, dm) tuple uniform.
     """
-    __tablename__ = "messages"
+    __tablename__ = "applies"
     __table_args__ = (
         UniqueConstraint(
             "job_posting_id", "decision_maker_id", "attempt_no",
-            name="uq_message_job_dm_attempt",
+            name="uq_apply_job_dm_attempt",
         ),
     )
 
@@ -94,17 +94,37 @@ class MessageRow(Base):
     decision_maker_id: Mapped[UUID] = mapped_column(ForeignKey("decision_makers.id"), index=True)
     attempt_no: Mapped[int] = mapped_column(default=1)
 
+    # Origin & routing
+    flank: Mapped[str] = mapped_column(String(20), default="dm_outreach")   # mass_apply | dm_outreach
+    method: Mapped[str] = mapped_column(String(20), default="manual")
+    # method: manual | hand_written | auto_apply | auto_outreach | semi_auto
+    channel: Mapped[str | None] = mapped_column(String(30))
+    # channel: linkedin | linkedin_inmail | email | telegram | ats_easy_apply |
+    #          ats_workday | ats_greenhouse | ats_lever | ats_ashby | other
+
+    # Scoring
     relevance_score: Mapped[int] = mapped_column(default=0)
+
+    # Status lifecycle:
+    # new → generated → queued → sent → seen → replied → interview_scheduled →
+    # interviewing → offer/accepted/rejected/no_reply/failed
     status: Mapped[str] = mapped_column(String(30), default="new")
+
+    # Content
+    subject: Mapped[str | None] = mapped_column(String(500))      # email/inmail Subject:
+    body: Mapped[str | None] = mapped_column(String(4000))         # DM body or email body
+    cover_letter: Mapped[str | None] = mapped_column(String(4000))  # ATS form CL field
+    form_responses: Mapped[dict | None] = mapped_column(JSON)       # {field_name: answer} for ATS forms
+    apply_url: Mapped[str | None] = mapped_column(String(500))      # exact URL we submitted to
+
     notes: Mapped[str] = mapped_column(String(2000), default="")
 
-    # Body of the message — generated once at this attempt
-    subject: Mapped[str | None] = mapped_column(String(500))   # email only
-    body: Mapped[str | None] = mapped_column(String(4000))
-    channel: Mapped[str | None] = mapped_column(String(20))
-    generated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)  # the only date
+    # Dates
+    generated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    sent_at: Mapped[datetime | None]                               # when actually delivered
+    response_at: Mapped[datetime | None]                           # when first reply seen
 
-    decision_maker: Mapped[DecisionMakerRow] = relationship(back_populates="messages")
+    decision_maker: Mapped[DecisionMakerRow] = relationship(back_populates="applies")
 
 
 class JobPostingRow(Base):
@@ -173,15 +193,48 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
 async def init_db() -> None:
     """Create tables if missing, then auto-migrate columns + unique constraints.
 
-    Order matters: drop tables with stale uniques FIRST (so create_all rebuilds them),
-    then run column reconciliation on what remains.
-    Caveat: stale-unique drop wipes data in that table — only safe for tables we
-    know are empty or transient (e.g. messages, before bodies were ever generated).
+    Order:
+      1. _drop_renamed_tables — drop tables that were renamed in the model (one-shot migrations)
+      2. _drop_stale_unique_tables — drop tables whose unique constraints diverged
+      3. create_all — create anything missing
+      4. _sync_columns — ADD/DROP columns to match the model
+
+    Caveat: drops wipe data in those tables — only safe for tables we know are
+    transient (applies — outreach attempts, regenerated from curated set anyway).
     """
     async with get_engine().begin() as conn:
+        await conn.run_sync(_drop_renamed_tables)
         await conn.run_sync(_drop_stale_unique_tables)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_sync_columns)
+
+
+def _drop_renamed_tables(sync_conn) -> None:
+    """One-shot drops for tables that were renamed in the model.
+
+    Add an entry here when you rename a table — the OLD table stays in the DB
+    forever otherwise. Each entry: (old_name, new_name). We drop OLD only if
+    NEW already exists in the model (means rename happened) AND OLD still exists
+    in the DB.
+    """
+    from loguru import logger
+    from sqlalchemy import inspect, text
+
+    RENAMES = [("messages", "applies")]
+    inspector = inspect(sync_conn)
+    model_tables = set(Base.metadata.tables.keys())
+
+    for old, new in RENAMES:
+        if new not in model_tables:
+            continue
+        if not inspector.has_table(old):
+            continue
+        row_count = sync_conn.execute(text(f"SELECT COUNT(*) FROM {old}")).scalar()
+        logger.warning(
+            "Auto-migration: renamed {} → {} in model. Dropping old table ({} rows).",
+            old, new, row_count,
+        )
+        sync_conn.execute(text(f"DROP TABLE {old}"))
 
 
 def _drop_stale_unique_tables(sync_conn) -> None:
@@ -194,7 +247,7 @@ def _drop_stale_unique_tables(sync_conn) -> None:
     from loguru import logger
     from sqlalchemy import inspect, text
 
-    SAFE_TO_WIPE = {"messages"}
+    SAFE_TO_WIPE = {"messages", "applies"}
     inspector = inspect(sync_conn)
 
     for table_name, table in Base.metadata.tables.items():

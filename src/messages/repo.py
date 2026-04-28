@@ -1,4 +1,4 @@
-"""SQLite-backed MessageRepository using SQLAlchemy async.
+"""SQLite-backed ApplyRepository using SQLAlchemy async.
 
 Deduplicates by (decision_maker, attempt_no).
 Updates last_seen_at / last_seen_at on re-scrape.
@@ -17,16 +17,16 @@ from src.messages.db import (
     CompanyRow,
     DecisionMakerRow,
     JobPostingRow,
-    MessageRow,
+    ApplyRow,
     get_session_maker,
 )
 from src.messages.models import Message, MessageChannel, MessageStatus
-from src.messages.ports import MessageRepository
+from src.messages.ports import ApplyRepository
 from src.people.models import DecisionMaker, DecisionMakerRole
 from src.shared import TechStack
 
 
-class SqliteMessageRepository(MessageRepository):
+class SqliteApplyRepository(ApplyRepository):
     """Persists messages in SQLite. Deduplicates on re-scrape.
 
     Hunt always creates/updates attempt_no=1.
@@ -66,17 +66,17 @@ class SqliteMessageRepository(MessageRepository):
             saved_companies, saved_dms, saved_messages,
         )
 
-    async def create_retry(self, dm_id: UUID, score: int = 0) -> MessageRow | None:
+    async def create_retry(self, dm_id: UUID, score: int = 0) -> ApplyRow | None:
         """Create a new attempt for an existing dm. attempt_no = max+1."""
         Session = get_session_maker()
         async with Session() as session:
             result = await session.execute(
-                select(MessageRow).where(MessageRow.decision_maker_id == dm_id).order_by(MessageRow.attempt_no.desc())
+                select(ApplyRow).where(ApplyRow.decision_maker_id == dm_id).order_by(ApplyRow.attempt_no.desc())
             )
             existing = result.scalars().first()
             if existing is None:
                 return None
-            row = MessageRow(
+            row = ApplyRow(
                 decision_maker_id=dm_id,
                 attempt_no=existing.attempt_no + 1,
                 relevance_score=score or existing.relevance_score,
@@ -134,7 +134,7 @@ class SqliteMessageRepository(MessageRepository):
         Session = get_session_maker()
         async with Session() as session:
             result = await session.execute(
-                select(MessageRow).where(MessageRow.id == message_id)
+                select(ApplyRow).where(ApplyRow.id == message_id)
             )
             row = result.scalar_one_or_none()
             if row is None:
@@ -145,7 +145,7 @@ class SqliteMessageRepository(MessageRepository):
         Session = get_session_maker()
         async with Session() as session:
             result = await session.execute(
-                select(MessageRow).where(MessageRow.status == status.value)
+                select(ApplyRow).where(ApplyRow.status == status.value)
             )
             for row in result.scalars():
                 yield await _row_to_message(session, row)
@@ -154,7 +154,7 @@ class SqliteMessageRepository(MessageRepository):
         Session = get_session_maker()
         async with Session() as session:
             result = await session.execute(
-                select(MessageRow).where(MessageRow.relevance_score >= min_score)
+                select(ApplyRow).where(ApplyRow.relevance_score >= min_score)
             )
             for row in result.scalars():
                 yield await _row_to_message(session, row)
@@ -162,7 +162,7 @@ class SqliteMessageRepository(MessageRepository):
     async def update_status(self, message_id: UUID, status: MessageStatus) -> None:
         Session = get_session_maker()
         async with Session() as session:
-            result = await session.execute(select(MessageRow).where(MessageRow.id == message_id))
+            result = await session.execute(select(ApplyRow).where(ApplyRow.id == message_id))
             row = result.scalar_one_or_none()
             if row:
                 row.status = status.value
@@ -171,7 +171,7 @@ class SqliteMessageRepository(MessageRepository):
     async def count(self) -> int:
         Session = get_session_maker()
         async with Session() as session:
-            result = await session.execute(select(func.count(MessageRow.id)))
+            result = await session.execute(select(func.count(ApplyRow.id)))
             return result.scalar() or 0
 
     async def save_job_postings(self, postings: list, company_name_to_id: dict) -> int:
@@ -326,7 +326,7 @@ async def _upsert_decision_maker(session, company_row: CompanyRow, dm: DecisionM
     return row
 
 
-async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
+async def _upsert_message(session, dm_id: UUID, msg: Message) -> ApplyRow:
     """Upsert message at attempt_no=1, keyed by (job_posting_id, dm_id, attempt_no).
 
     job_posting_id may be None for bare DM outreach not tied to a specific posting.
@@ -334,15 +334,15 @@ async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
     """
     jp_id = msg.job_posting.id if msg.job_posting else None
     where = [
-        MessageRow.decision_maker_id == dm_id,
-        MessageRow.attempt_no == 1,
+        ApplyRow.decision_maker_id == dm_id,
+        ApplyRow.attempt_no == 1,
     ]
     if jp_id is None:
-        where.append(MessageRow.job_posting_id.is_(None))
+        where.append(ApplyRow.job_posting_id.is_(None))
     else:
-        where.append(MessageRow.job_posting_id == jp_id)
+        where.append(ApplyRow.job_posting_id == jp_id)
 
-    result = await session.execute(select(MessageRow).where(*where))
+    result = await session.execute(select(ApplyRow).where(*where))
     row = result.scalar_one_or_none()
 
     if row:
@@ -355,7 +355,7 @@ async def _upsert_message(session, dm_id: UUID, msg: Message) -> MessageRow:
             row.generated_at = msg.generated_at
         row._is_new = False
     else:
-        row = MessageRow(
+        row = ApplyRow(
             job_posting_id=jp_id,
             decision_maker_id=dm_id,
             attempt_no=1,
@@ -390,7 +390,7 @@ def _dm_row_to_domain(dm_row: DecisionMakerRow) -> DecisionMaker:
     )
 
 
-async def _row_to_message(session, row: MessageRow) -> Message:
+async def _row_to_message(session, row: ApplyRow) -> Message:
     dm_result = await session.execute(select(DecisionMakerRow).where(DecisionMakerRow.id == row.decision_maker_id))
     dm_row = dm_result.scalar_one()
     comp_result = await session.execute(select(CompanyRow).where(CompanyRow.id == dm_row.company_id))

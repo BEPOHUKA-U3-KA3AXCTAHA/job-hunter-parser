@@ -23,16 +23,16 @@ class CandidateProfile:
 
     summary: str = (
         "Back-end developer with 4+ years of Python and Rust experience. "
-        "Built IoT systems handling 500+ devices (MQTT telemetry), "
-        "algorithmic trading platform with sub-100ms latency (Actix-web + Tokio + PyO3), "
+        "Architect on a Rust+MQTT IoT prototype (pump equipment monitoring for city water supply), "
+        "shipped an algorithmic trading platform with sub-100ms reaction (Actix-web + Tokio + PyO3), "
         "and freight control systems with event-driven architecture (RabbitMQ/Kafka). "
-        "Experience as Technical Lead and Architect, designing microservice systems from scratch."
+        "Experience as Technical Lead, designing hexagonal microservice systems from scratch."
     )
 
     highlights: list[str] = field(
         default_factory=lambda: [
             "Reduced trading system reaction time from 2s to 100ms via Rust + PyO3",
-            "Designed IoT architecture for 500+ device telemetry processing",
+            "Architect on a Rust+MQTT IoT prototype for pump equipment monitoring",
             "Technical Lead experience with code review and architecture decisions",
             "Python + Rust combo (rare on the market)",
         ]

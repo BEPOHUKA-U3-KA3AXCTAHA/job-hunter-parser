@@ -9,7 +9,7 @@ from src.messages.models import Message, MessageChannel, MessageStatus
 from src.people.models import DecisionMaker
 
 
-class MessageRepository(ABC):
+class ApplyRepository(ABC):
     """Port for persisting and querying Messages."""
 
     @abstractmethod
