@@ -13,6 +13,7 @@ job-hunter-parser/
 │   ├── companies/                   # Job postings + company sourcing
 │   ├── people/                      # Decision makers + contact enrichment
 │   ├── messages/                    # Outreach attempts ("applies" semantically)
+│   ├── automation/                  # ⭐ Browser automation (Camoufox) + Claude CLI pool
 │   └── shared/                      # Shared value objects (TechStack, Email, SearchCriteria, …)
 ├── docs/                            # Architecture + roadmap docs (this file lives here)
 ├── scripts/                         # One-off helpers (show_letter.sh, …)
@@ -98,6 +99,26 @@ src/messages/
 | response_at | datetime nullable | when first response received |
 
 **Unique key:** `(job_posting_id, decision_maker_id, attempt_no)`
+
+## src/automation/ — browser automation + LLM pool
+
+```
+src/automation/
+├── firefox_cookies.py              # Read user's real Firefox cookies (works while FF is running, copies the locked sqlite first)
+├── browser.py                       # BrowserSession context manager (Camoufox + persistent profile + cookie injection)
+├── llm_pool.py                      # ClaudeCLIPool — concurrent `claude -p ...` subprocess pool with rate-limit guard
+└── (future) linkedin_outreach.py    # Phase 1 — LinkedIn DOM automation
+└── (future) ats/                    # Phase 2 — ATS form fillers
+```
+
+**Browser stack:** Camoufox (anti-detect Firefox, MIT) driven via Playwright async API. `humanize=True` adds bezier mouse curves + reading-speed pauses. Persistent profile at `~/.jhp/camoufox-profile`. LinkedIn cookies imported once from `~/.mozilla/firefox/<profile>/cookies.sqlite` so we don't trigger "new device" alerts on first use.
+
+**LLM pool:** `claude -p '<prompt>'` subprocess calls in parallel via `asyncio.create_subprocess_exec`. Default 5 workers, 60 calls/min cap (token bucket). Uses user's Claude Max subscription — no per-token API charges. Each call ~3-30 sec wall-clock.
+
+**Anti-detection signals (verified):**
+- `navigator.webdriver === false` (vs `true` for raw Playwright)
+- TLS fingerprint = real Firefox 135.0
+- Canvas/WebGL fingerprints have per-session noise (Camoufox patch)
 
 ## src/shared/
 
