@@ -55,16 +55,51 @@ def _build_search_urls(keywords_list: list[str]) -> list[str]:
     return out
 
 
+# Profile-match: title must contain at least one of these AND none of the rejects
+_TITLE_REQUIRED_ANY = [
+    "rust", "python", "backend", "back-end", "back end",
+    "engineer", "developer", "platform", "infrastructure", "sre",
+    "software", "fullstack", "full stack", "full-stack",
+]
+_TITLE_REJECT = [
+    "frontend", "front-end", "front end", "ui ", "ux ", "designer",
+    "manager", "director", "vp ", "head of", "chief ",
+    "marketing", "sales", "account ", "support", "recruit", "hr ",
+    "intern", "junior", "graduate ",
+    "data analyst", "data scientist",
+    "ml engineer", "ai engineer", "machine learning",
+    "java ", " java", "scala", "ruby ", "rails", "php ", "salesforce",
+    ".net", "c#", "wordpress", "android", "ios ", "mobile",
+    "qa ", "tester", "writer", "copywriter",
+    "specialist", "associate", "consultant", "advisor",
+    "compliance", "legal", "operations manager", "project manager",
+]
+
+
+def _matches_profile(title: str) -> bool:
+    """Filter jobs to those that fit Sergey's profile (Python+Rust senior backend).
+    Conservative: must match at least one require and none of the rejects."""
+    t = (title or "").lower()
+    if not any(must in t for must in _TITLE_REQUIRED_ANY):
+        return False
+    if any(bad in t for bad in _TITLE_REJECT):
+        return False
+    return True
+
+
 def _fetch_candidates_via_driver(driver, keywords_list: list[str], want: int = 25) -> list[tuple[str, str, str]]:
-    """Pull candidate (job_url, title, company) from LinkedIn search WITHIN
-    the logged-in Selenium session. Filters to cards that have an "Easy Apply"
-    badge — only those will actually have the Easy Apply button on detail.
+    """Pull (url, title, company) from LinkedIn search inside the logged-in Selenium session.
+
+    Filters:
+      - has "Easy Apply" badge (so real Easy Apply, not external)
+      - not already applied
+      - title matches user's profile (Python/Rust/backend/etc, no frontend/manager/etc)
     """
     out: list[tuple[str, str, str]] = []
     seen: set[str] = set()
+    rejected_profile = 0
     for kw in keywords_list:
         q = quote_plus(kw)
-        # Authenticated search URL — f_AL=true respected here
         search_url = (
             "https://www.linkedin.com/jobs/search/"
             f"?keywords={q}&f_AL=true&f_TPR=r604800&f_WT=2&sortBy=DD"
@@ -76,16 +111,13 @@ def _fetch_candidates_via_driver(driver, keywords_list: list[str], want: int = 2
             logger.warning("search nav failed: {}", e)
             continue
         time.sleep(5)
-        # Scroll to lazy-load more cards
         for _ in range(3):
             driver.execute_script("window.scrollBy(0, 1000);")
             time.sleep(1.5)
 
-        # Extract Easy Apply cards — those have a badge with text "Easy Apply"
         cards = driver.execute_script("""
             const out = [];
             const seen = new Set();
-            // Job cards live in the left rail
             const cards = document.querySelectorAll('li[data-occludable-job-id], li.jobs-search-results__list-item, div.job-card-container');
             for (const c of cards) {
                 const hasEasyApply = /easy apply/i.test(c.innerText || '');
@@ -104,14 +136,19 @@ def _fetch_candidates_via_driver(driver, keywords_list: list[str], want: int = 2
             }
             return out;
         """)
-        logger.info("Found {} Easy Apply cards (kw={!r})", len(cards), kw)
+        logger.info("Found {} EA cards for {!r}", len(cards), kw)
         for c in cards:
             if c["href"] in seen or c["applied"]:
+                continue
+            if not _matches_profile(c["title"]):
+                rejected_profile += 1
                 continue
             seen.add(c["href"])
             out.append((c["href"], c["title"][:120], c["company"][:80]))
             if len(out) >= want:
+                logger.info("Profile-matched: {}, rejected: {}", len(out), rejected_profile)
                 return out
+    logger.info("Profile-matched: {}, rejected by profile filter: {}", len(out), rejected_profile)
     return out
 
 

@@ -13,6 +13,7 @@ Strategy:
 """
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from contextlib import contextmanager
@@ -36,6 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from src.automation.firefox_cookies import find_default_profile
 
 PROFILE_COPY_DIR = Path("/tmp/jhp_ff_profile")
+DIAG_DIR = Path("/tmp/jhp_diag")
 
 MAX_MODAL_PAGES = 4
 RATE_LIMIT_MARKERS = [
@@ -137,23 +139,56 @@ def selenium_firefox(headless: bool = False, copy_profile: bool = True):
             pass
 
 
+# --- Diagnostics ---
+
+def _diag_save(driver, tag: str) -> None:
+    """Best-effort screenshot + html dump for failure diagnostics."""
+    try:
+        DIAG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", tag)[:40]
+        png = DIAG_DIR / f"{ts}_{safe}.png"
+        html = DIAG_DIR / f"{ts}_{safe}.html"
+        driver.save_screenshot(str(png))
+        try:
+            html.write_text(driver.page_source[:300_000])
+        except Exception:
+            pass
+        logger.warning("diag saved: {}", png.name)
+    except Exception as e:
+        logger.debug("diag save failed: {}", e)
+
+
 # --- DOM helpers (text-based, not class-based) ---
 
 def find_button_by_text(driver, text_regex: str, timeout: float = 4.0):
-    """Find first VISIBLE button whose text or aria-label matches regex.
+    """Find first VISIBLE clickable element (button OR anchor with role=button)
+    whose text or aria-label matches regex.
     text_regex: JS-style regex string like 'easy apply\\b'
     """
     end = time.monotonic() + timeout
+    # Search BOTH buttons and anchors with role=button — LinkedIn uses both.
+    # Prefer the EA button outside the "Save" / "More" sections by scoring
+    # buttons in the top-card region higher.
     js = """
         const re = new RegExp(arguments[0], 'i');
-        for (const b of document.querySelectorAll('button')) {
+        const candidates = [];
+        const sel = "button, a[role='button'], a.jobs-apply-button";
+        for (const b of document.querySelectorAll(sel)) {
             if (b.offsetParent === null) continue;
-            if (b.disabled) continue;
+            if (b.disabled || b.getAttribute('aria-disabled') === 'true') continue;
             const t = (b.textContent || '').trim();
             const a = (b.getAttribute('aria-label') || '').trim();
-            if (re.test(t) || re.test(a)) return b;
+            if (re.test(t) || re.test(a)) candidates.push(b);
         }
-        return null;
+        if (!candidates.length) return null;
+        // Prefer the one inside the top job card / apply section
+        for (const b of candidates) {
+            if (b.closest('.jobs-apply-button--top-card, .jobs-s-apply, .jobs-unified-top-card, .job-details-jobs-unified-top-card')) {
+                return b;
+            }
+        }
+        return candidates[0];
     """
     while time.monotonic() < end:
         el = driver.execute_script(js, text_regex)
@@ -161,6 +196,63 @@ def find_button_by_text(driver, text_regex: str, timeout: float = 4.0):
             return el
         time.sleep(0.2)
     return None
+
+
+def robust_click(driver, el, label: str = "btn") -> bool:
+    """Click that survives overlays, animations, off-screen elements.
+    Tries scrollIntoView → native click → JS click → Actions click.
+    Returns True if any strategy didn't raise."""
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center', behavior:'instant'});", el,
+        )
+        time.sleep(0.3)
+    except Exception:
+        pass
+    # Strategy 1: native
+    try:
+        el.click()
+        logger.debug("{}: native click ok", label)
+        return True
+    except Exception as e:
+        logger.debug("{}: native click failed: {}", label, e)
+    # Strategy 2: JS click
+    try:
+        driver.execute_script("arguments[0].click();", el)
+        logger.debug("{}: JS click ok", label)
+        return True
+    except Exception as e:
+        logger.debug("{}: JS click failed: {}", label, e)
+    # Strategy 3: Actions
+    try:
+        from selenium.webdriver.common.action_chains import ActionChains
+        ActionChains(driver).move_to_element(el).pause(0.2).click().perform()
+        logger.debug("{}: Actions click ok", label)
+        return True
+    except Exception as e:
+        logger.debug("{}: Actions click failed: {}", label, e)
+    return False
+
+
+def wait_for_modal(driver, timeout: float = 6.0) -> bool:
+    """Wait for the Easy Apply modal/dialog to appear after clicking Apply."""
+    js = """
+        return !!document.querySelector(
+            "div[role='dialog'][aria-labelledby*='ply'], "
+            + ".jobs-easy-apply-modal, "
+            + ".artdeco-modal[aria-labelledby*='easy'], "
+            + ".jobs-easy-apply-content"
+        );
+    """
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            if driver.execute_script(js):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return False
 
 
 def find_input_by_label(driver, label_regex: str):
@@ -215,6 +307,8 @@ def dump_buttons(driver, limit: int = 12) -> list[dict]:
 
 def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
     logger.info("Opening: {}", job_url)
+    job_id = re.search(r"/jobs/view/(\d+)", job_url)
+    job_tag = job_id.group(1) if job_id else "nojid"
     try:
         driver.get(job_url)
     except WebDriverException as e:
@@ -222,12 +316,23 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
     human_sleep(3, 5)
 
     if is_blocked_page(driver):
+        _diag_save(driver, f"{job_tag}_blocked")
         return ApplyResult(ApplyOutcome.BLOCKED, "warning page detected")
 
     # Verify we landed on the job page (not authwall)
     url_now = page_url(driver)
     if "linkedin.com/jobs/" not in url_now:
+        _diag_save(driver, f"{job_tag}_redirect")
         return ApplyResult(ApplyOutcome.FAILED, f"redirected to {url_now}")
+
+    # Some pages need a scroll to wire up the apply button
+    try:
+        driver.execute_script("window.scrollBy(0, 400);")
+        time.sleep(0.5)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(0.3)
+    except Exception:
+        pass
 
     # Already applied? Check for "Applied" / "Submitted resume" indicator
     already_text = driver.execute_script(
@@ -237,45 +342,54 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
         return ApplyResult(ApplyOutcome.ALREADY_APPLIED)
 
     # Try Easy Apply first (full apply with modal)
-    ea_btn = find_button_by_text(driver, r"easy apply\b", timeout=4)
+    ea_btn = find_button_by_text(driver, r"easy apply\b", timeout=6)
     if ea_btn:
         human_sleep(0.8, 1.8)
-        ea_btn.click()
-        logger.info("clicked Easy Apply")
-        human_sleep(1.5, 3)
-        return _walk_modal(driver, profile_phone)
+        if not robust_click(driver, ea_btn, "easy_apply"):
+            _diag_save(driver, f"{job_tag}_ea_click_failed")
+            return ApplyResult(ApplyOutcome.FAILED, "all click strategies failed on Easy Apply")
+        logger.info("clicked Easy Apply, waiting for modal")
+        if not wait_for_modal(driver, timeout=6):
+            _diag_save(driver, f"{job_tag}_no_modal")
+            # Maybe the click opened an external apply tab — re-check buttons
+            return ApplyResult(ApplyOutcome.FAILED, "Easy Apply clicked but modal never appeared")
+        logger.info("modal appeared")
+        return _walk_modal(driver, profile_phone, job_tag)
 
     # Fallback: "I'm interested" — LinkedIn's soft-signal alternative
     interested = find_button_by_text(driver, r"i.?m interested", timeout=2)
     if interested:
         human_sleep(0.8, 1.8)
-        interested.click()
+        if not robust_click(driver, interested, "interested"):
+            _diag_save(driver, f"{job_tag}_interested_click_failed")
+            return ApplyResult(ApplyOutcome.FAILED, "I'm interested click failed")
         logger.info("clicked I'm interested (soft-signal)")
         human_sleep(1.5, 3)
         # Some flows show a confirmation modal with "Submit" or auto-close
         confirm = find_button_by_text(driver, r"^(?:submit|confirm|done|got it)$", timeout=2)
         if confirm:
-            confirm.click()
+            robust_click(driver, confirm, "interested_confirm")
             human_sleep(1, 2)
         return ApplyResult(ApplyOutcome.INTEREST_SIGNALED, detail="clicked I'm interested")
 
     # Neither button → really no apply path
     dump = dump_buttons(driver)
     logger.info("No Apply or I'm interested. Buttons: {}", dump)
+    _diag_save(driver, f"{job_tag}_no_apply")
     return ApplyResult(ApplyOutcome.NO_EASY_APPLY, detail=f"buttons={dump}")
 
 
-def _walk_modal(driver, profile_phone: str) -> ApplyResult:
+def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResult:
     for page_idx in range(MAX_MODAL_PAGES):
         human_sleep(0.6, 1.4)
         if is_blocked_page(driver):
+            _diag_save(driver, f"{job_tag}_modal_blocked_p{page_idx}")
             return ApplyResult(ApplyOutcome.BLOCKED, f"page {page_idx}")
 
         # Phone fill
         if profile_phone:
             inp = find_input_by_label(driver, r"phone|mobile|tel")
             if inp:
-                # JS: clear value then set with input event
                 current = driver.execute_script("return arguments[0].value;", inp)
                 if not current.strip():
                     driver.execute_script(
@@ -292,7 +406,9 @@ def _walk_modal(driver, profile_phone: str) -> ApplyResult:
             logger.info("Submit at page {}", page_idx + 1)
             _uncheck_follow(driver)
             human_sleep(0.7, 1.4)
-            submit.click()
+            if not robust_click(driver, submit, "submit"):
+                _diag_save(driver, f"{job_tag}_submit_click_failed")
+                return ApplyResult(ApplyOutcome.FAILED, "submit click failed", pages=page_idx + 1)
             human_sleep(2.5, 4)
             return ApplyResult(ApplyOutcome.APPLIED, pages=page_idx + 1)
 
@@ -300,7 +416,7 @@ def _walk_modal(driver, profile_phone: str) -> ApplyResult:
         review = find_button_by_text(driver, r"^review( your application)?$", timeout=1)
         if review:
             logger.debug("Review at page {}", page_idx + 1)
-            review.click()
+            robust_click(driver, review, "review")
             human_sleep(1, 2)
             continue
 
@@ -314,6 +430,7 @@ def _walk_modal(driver, profile_phone: str) -> ApplyResult:
             """)
             if errs > 0:
                 logger.info("Unfilled required fields at page {}", page_idx + 1)
+                _diag_save(driver, f"{job_tag}_required_fields_p{page_idx}")
                 _close_modal(driver)
                 return ApplyResult(
                     ApplyOutcome.TOO_MANY_QUESTIONS,
@@ -321,12 +438,13 @@ def _walk_modal(driver, profile_phone: str) -> ApplyResult:
                     pages=page_idx + 1,
                 )
             logger.debug("Continue at page {}", page_idx + 1)
-            cont.click()
+            robust_click(driver, cont, "continue")
             human_sleep(1, 2)
             continue
 
         # Nothing matches → bail with diagnostic
         dump = dump_buttons(driver, 8)
+        _diag_save(driver, f"{job_tag}_no_nav_p{page_idx}")
         return ApplyResult(
             ApplyOutcome.FAILED,
             detail=f"no nav at page {page_idx + 1}: {dump}",
