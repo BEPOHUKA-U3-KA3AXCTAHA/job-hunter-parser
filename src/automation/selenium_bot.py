@@ -160,31 +160,81 @@ def _diag_save(driver, tag: str) -> None:
 
 
 # --- DOM helpers (text-based, not class-based) ---
+#
+# CRITICAL: LinkedIn 2026 wraps the Easy Apply modal (and other dynamic UI)
+# inside a Shadow DOM root attached to <div id="interop-outlet">. Native
+# document.querySelector* DOES NOT cross shadow boundaries, so every helper
+# below must use the deep walker JS_WALK_PROLOG below.
+
+JS_WALK_PROLOG = """
+function* deepNodes(root) {
+    if (!root) return;
+    const stack = [root];
+    while (stack.length) {
+        const node = stack.pop();
+        if (!node) continue;
+        if (node.nodeType === 1) yield node;
+        if (node.shadowRoot) stack.push(node.shadowRoot);
+        const kids = node.children || node.childNodes || [];
+        // push in reverse so DOM order is preserved on pop
+        for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+}
+function isVisible(el) {
+    // offsetParent doesn't work in shadow roots — use rect+style instead.
+    const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    if (!rect || rect.width < 4 || rect.height < 4) return false;
+    const cs = (el.ownerDocument && el.ownerDocument.defaultView)
+        ? el.ownerDocument.defaultView.getComputedStyle(el) : null;
+    if (cs && (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0')) return false;
+    return true;
+}
+"""
+
 
 def find_button_by_text(driver, text_regex: str, timeout: float = 4.0):
-    """Find first VISIBLE clickable element (button OR anchor with role=button)
-    whose text or aria-label matches regex.
+    """Find first VISIBLE clickable element whose text or aria-label matches regex.
+
+    LinkedIn 2026: Easy Apply is rendered as <A> (anchor) WITHOUT role='button'
+    and WITHOUT the legacy .jobs-apply-button class. The most stable selector
+    is aria-label substring "Easy Apply to" (AIHawk-proven).
+
     text_regex: JS-style regex string like 'easy apply\\b'
     """
     end = time.monotonic() + timeout
-    # Search BOTH buttons and anchors with role=button — LinkedIn uses both.
-    # Prefer the EA button outside the "Save" / "More" sections by scoring
-    # buttons in the top-card region higher.
-    js = """
+    js = JS_WALK_PROLOG + """
         const re = new RegExp(arguments[0], 'i');
         const candidates = [];
-        const sel = "button, a[role='button'], a.jobs-apply-button";
-        for (const b of document.querySelectorAll(sel)) {
-            if (b.offsetParent === null) continue;
-            if (b.disabled || b.getAttribute('aria-disabled') === 'true') continue;
-            const t = (b.textContent || '').trim();
-            const a = (b.getAttribute('aria-label') || '').trim();
-            if (re.test(t) || re.test(a)) candidates.push(b);
+        const ALLOW = new Set(['BUTTON', 'A']);
+        for (const el of deepNodes(document)) {
+            if (!ALLOW.has(el.tagName) && el.getAttribute('role') !== 'button') continue;
+            if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+            if (!isVisible(el)) continue;
+            const t = (el.textContent || '').trim();
+            const a = (el.getAttribute('aria-label') || '').trim();
+            if (!re.test(t) && !re.test(a)) continue;
+            const rect = el.getBoundingClientRect();
+            // Skip top global nav (Jobs/Messaging/etc) — they're at top:0
+            if (rect.top < 50 && el.closest && el.closest('nav, header, [role="navigation"]')) continue;
+            candidates.push(el);
         }
         if (!candidates.length) return null;
-        // Prefer the one inside the top job card / apply section
+        // Priority 1: exact aria-label match "easy apply to"
         for (const b of candidates) {
-            if (b.closest('.jobs-apply-button--top-card, .jobs-s-apply, .jobs-unified-top-card, .job-details-jobs-unified-top-card')) {
+            const a = (b.getAttribute('aria-label') || '').toLowerCase();
+            if (a.includes('easy apply to')) return b;
+        }
+        // Priority 2: inside any [role='dialog'] (modal Next/Submit/Continue)
+        for (const b of candidates) {
+            let p = b;
+            while (p) {
+                if (p.getAttribute && p.getAttribute('role') === 'dialog') return b;
+                p = p.parentNode || (p.host /* shadowRoot */);
+            }
+        }
+        // Priority 3: top-card region
+        for (const b of candidates) {
+            if (b.closest && b.closest('.jobs-apply-button--top-card, .jobs-s-apply, .jobs-unified-top-card, .job-details-jobs-unified-top-card')) {
                 return b;
             }
         }
@@ -234,15 +284,22 @@ def robust_click(driver, el, label: str = "btn") -> bool:
     return False
 
 
-def wait_for_modal(driver, timeout: float = 6.0) -> bool:
-    """Wait for the Easy Apply modal/dialog to appear after clicking Apply."""
-    js = """
-        return !!document.querySelector(
-            "div[role='dialog'][aria-labelledby*='ply'], "
-            + ".jobs-easy-apply-modal, "
-            + ".artdeco-modal[aria-labelledby*='easy'], "
-            + ".jobs-easy-apply-content"
-        );
+def wait_for_modal(driver, timeout: float = 8.0) -> bool:
+    """Wait for the Easy Apply modal/dialog to appear after clicking Apply.
+
+    LinkedIn 2026: modal lives inside Shadow DOM (#interop-outlet). Must walk
+    through shadow roots to find [role='dialog'] with the apply form.
+    """
+    js = JS_WALK_PROLOG + """
+        for (const d of deepNodes(document)) {
+            if (d.getAttribute && d.getAttribute('role') === 'dialog' && isVisible(d)) {
+                const t = (d.textContent || '').toLowerCase().substring(0, 800);
+                if (/apply|contact info|first name|easy apply|submit application|review your application|dialog content/.test(t)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     """
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -256,17 +313,35 @@ def wait_for_modal(driver, timeout: float = 6.0) -> bool:
 
 
 def find_input_by_label(driver, label_regex: str):
-    """Find first VISIBLE input whose label/placeholder/aria matches regex."""
-    js = """
+    """Find first VISIBLE input whose label/placeholder/aria matches regex.
+    Walks Shadow DOM."""
+    js = JS_WALK_PROLOG + """
         const re = new RegExp(arguments[0], 'i');
-        for (const inp of document.querySelectorAll("input[type='text'], input[type='tel'], input:not([type])")) {
-            if (inp.offsetParent === null) continue;
+        const TYPES = new Set(['text', 'tel', '', 'email']);
+        for (const inp of deepNodes(document)) {
+            if (inp.tagName !== 'INPUT') continue;
+            const type = (inp.type || '').toLowerCase();
+            if (!TYPES.has(type)) continue;
+            if (!isVisible(inp)) continue;
             const id = inp.id || '';
             const name = inp.name || '';
             const placeholder = inp.placeholder || '';
             const aria = inp.getAttribute('aria-label') || '';
-            const labelEl = id ? document.querySelector(`label[for="${id}"]`) : null;
-            const labelText = labelEl ? labelEl.textContent : '';
+            // Find label across shadow boundaries — walk up from input
+            let labelText = '';
+            if (id) {
+                const root = inp.getRootNode ? inp.getRootNode() : document;
+                const labelEl = root.querySelector ? root.querySelector('label[for="' + id + '"]') : null;
+                labelText = labelEl ? labelEl.textContent : '';
+            }
+            // Also try ancestor label
+            if (!labelText) {
+                let p = inp.parentNode;
+                for (let i = 0; i < 4 && p; i++) {
+                    if (p.tagName === 'LABEL') { labelText = p.textContent; break; }
+                    p = p.parentNode;
+                }
+            }
             if (re.test([id, name, placeholder, aria, labelText].join(' '))) return inp;
         }
         return null;
@@ -292,15 +367,45 @@ def page_url(driver) -> str:
 
 
 def dump_buttons(driver, limit: int = 12) -> list[dict]:
-    return driver.execute_script(f"""
-        return Array.from(document.querySelectorAll('button'))
-            .filter(b => b.offsetParent !== null && !b.disabled)
-            .slice(0, {limit})
-            .map(b => ({{
+    """Dump visible buttons across whole page including Shadow DOM."""
+    js = JS_WALK_PROLOG + f"""
+        const out = [];
+        for (const b of deepNodes(document)) {{
+            if (b.tagName !== 'BUTTON' && (b.getAttribute && b.getAttribute('role') !== 'button')) continue;
+            if (b.disabled) continue;
+            if (!isVisible(b)) continue;
+            out.push({{
                 text: (b.textContent || '').trim().substring(0, 50),
                 aria: (b.getAttribute('aria-label') || '').substring(0, 80),
-            }}));
-    """)
+            }});
+            if (out.length >= {limit}) break;
+        }}
+        return out;
+    """
+    try:
+        return driver.execute_script(js)
+    except Exception:
+        return []
+
+
+def has_modal_errors(driver) -> bool:
+    """Check for visible inline error messages inside modal (red required-field warnings)."""
+    js = JS_WALK_PROLOG + """
+        for (const e of deepNodes(document)) {
+            if (!isVisible(e)) continue;
+            const role = e.getAttribute && e.getAttribute('role');
+            const cls = (e.className || '').toString();
+            if (role === 'alert' || cls.includes('error') || cls.includes('feedback--error')) {
+                const t = (e.textContent || '').trim();
+                if (t.length > 0 && t.length < 200) return true;
+            }
+        }
+        return false;
+    """
+    try:
+        return bool(driver.execute_script(js))
+    except Exception:
+        return False
 
 
 # --- Easy Apply flow ---
@@ -423,12 +528,7 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
         # Continue / Next?
         cont = find_button_by_text(driver, r"^(?:continue( to next step)?|next)$", timeout=1)
         if cont:
-            errs = driver.execute_script("""
-                return Array.from(document.querySelectorAll(
-                    "[role='alert'], .artdeco-inline-feedback--error"
-                )).filter(e => e.offsetParent !== null && (e.textContent || '').trim()).length;
-            """)
-            if errs > 0:
+            if has_modal_errors(driver):
                 logger.info("Unfilled required fields at page {}", page_idx + 1)
                 _diag_save(driver, f"{job_tag}_required_fields_p{page_idx}")
                 _close_modal(driver)
@@ -437,7 +537,7 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
                     detail=f"red errors at page {page_idx + 1}",
                     pages=page_idx + 1,
                 )
-            logger.debug("Continue at page {}", page_idx + 1)
+            logger.info("Continue/Next at page {}", page_idx + 1)
             robust_click(driver, cont, "continue")
             human_sleep(1, 2)
             continue
@@ -460,16 +560,25 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
 
 
 def _uncheck_follow(driver):
-    driver.execute_script("""
-        for (const cb of document.querySelectorAll("input[type='checkbox']")) {
-            const lbl = cb.closest('label') || document.querySelector(`label[for='${cb.id}']`);
+    """Uncheck the 'Follow company' checkbox in the modal (shadow-DOM aware)."""
+    js = JS_WALK_PROLOG + """
+        for (const cb of deepNodes(document)) {
+            if (cb.tagName !== 'INPUT' || cb.type !== 'checkbox') continue;
+            const root = cb.getRootNode ? cb.getRootNode() : document;
+            const lbl = cb.closest && cb.closest('label')
+                || (cb.id && root.querySelector ? root.querySelector('label[for="' + cb.id + '"]') : null);
             const t = lbl ? lbl.textContent.toLowerCase() : '';
             if (/follow.*compan/i.test(t) && cb.checked) {
-                lbl.click();
-                return;
+                (lbl || cb).click();
+                return true;
             }
         }
-    """)
+        return false;
+    """
+    try:
+        driver.execute_script(js)
+    except Exception:
+        pass
 
 
 def _close_modal(driver):
