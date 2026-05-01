@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from src.shared.seniority import Seniority
+from app.shared.seniority import Seniority
 
 
 @dataclass(frozen=True, slots=True)

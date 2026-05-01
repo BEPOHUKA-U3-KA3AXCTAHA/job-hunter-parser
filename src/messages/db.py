@@ -1,51 +1,34 @@
-"""SQLAlchemy ORM models + async engine.
+"""SQLAlchemy ORM models + async engine — TRANSITIONAL SHIM.
 
-Supports both SQLite (default, zero config) and PostgreSQL via DATABASE_URL env.
+History: this file used to define ALL ORM tables for the project. The
+modular refactor (classfieds-style) moved them per-module:
 
-SQLite:     DATABASE_URL=sqlite+aiosqlite:///jhp.db  (default)
-PostgreSQL: DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/jhp
+- CompanyRow, JobPostingRow → app.modules.companies.adapters.orm
+- DecisionMakerRow          → app.modules.people.adapters.orm   (PENDING)
+- ApplyRow                  → app.modules.applies.adapters.orm  (PENDING)
+
+For now this file:
+1. RE-EXPORTS the moved classes from their new location
+2. Keeps the not-yet-moved tables defined here
+3. Keeps engine + session helpers (will move to app/infra/db when refactor completes)
+
+Existing imports `from src.messages.db import X` continue to work via the
+re-exports below until callers are updated.
 """
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-class CompanyRow(Base):
-    __tablename__ = "companies"
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
-    website: Mapped[str | None] = mapped_column(String(500))
-    description: Mapped[str | None] = mapped_column(String(2000))
-    tech_stack: Mapped[str | None] = mapped_column(String(500))
-    headcount: Mapped[int | None]
-    location: Mapped[str | None] = mapped_column(String(200))
-    is_hiring: Mapped[bool] = mapped_column(default=True)
-    source: Mapped[str | None] = mapped_column(String(50))
-    source_url: Mapped[str | None] = mapped_column(String(500))
-
-    # Only date that drives logic: when we last hit TheOrg/Apollo for this company's DMs.
-    # Used by freshness cache to skip re-enrichment within skip_fresh_days window.
-    last_dm_scan_at: Mapped[datetime | None]
-
-    decision_makers: Mapped[list[DecisionMakerRow]] = relationship(
-        back_populates="company", cascade="all, delete-orphan"
-    )
-
-    def is_dm_data_fresh(self, max_age_days: int = 30) -> bool:
-        if self.last_dm_scan_at is None:
-            return False
-        return (datetime.utcnow() - self.last_dm_scan_at) < timedelta(days=max_age_days)
+# Single shared declarative Base lives in app/infra/db now
+from app.infra.db import Base
+# Re-export ORM classes that already moved to modules
+from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow  # noqa: F401
 
 
 class DecisionMakerRow(Base):
@@ -125,36 +108,6 @@ class ApplyRow(Base):
     response_at: Mapped[datetime | None]                           # when first reply seen
 
     decision_maker: Mapped[DecisionMakerRow] = relationship(back_populates="applies")
-
-
-class JobPostingRow(Base):
-    __tablename__ = "job_postings"
-    __table_args__ = (UniqueConstraint("source_url", name="uq_jp_source_url"),)
-
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    company_id: Mapped[UUID | None] = mapped_column(ForeignKey("companies.id"), index=True)
-
-    title: Mapped[str] = mapped_column(String(300))
-    description: Mapped[str | None] = mapped_column(String(5000))
-    tech_stack: Mapped[str | None] = mapped_column(String(500))
-    seniority: Mapped[str | None] = mapped_column(String(30))
-    is_remote: Mapped[bool] = mapped_column(default=False)
-    location: Mapped[str | None] = mapped_column(String(200))
-    salary_min: Mapped[int | None]
-    salary_max: Mapped[int | None]
-    salary_currency: Mapped[str | None] = mapped_column(String(10))
-    source: Mapped[str | None] = mapped_column(String(50))
-    source_url: Mapped[str | None] = mapped_column(String(500), index=True)
-
-    first_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
-    is_active: Mapped[bool] = mapped_column(default=True)
-
-    # Competition signals from the source page (best effort, may be NULL)
-    applicants_count: Mapped[int | None]
-    posted_at: Mapped[datetime | None]
-    # Real apply-to email when the source exposed one (careers@/jobs@/hr@/...)
-    apply_email: Mapped[str | None] = mapped_column(String(200))
 
 
 # --- Engine & session factory ---

@@ -13,8 +13,13 @@ from alembic import context
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# CURRENT layout — will move when src/ → app/modules/ refactor lands
-from src.messages.db import Base
+# Single shared Base — modules register tables by importing it
+from app.infra.db import Base
+
+# Import every module's ORM module so its tables are registered with Base.metadata
+# before Alembic compares the model schema against the live DB.
+import app.modules.companies.adapters.orm  # noqa: F401  CompanyRow, JobPostingRow
+import src.messages.db  # noqa: F401  DecisionMakerRow, ApplyRow (until people/applies modules land)
 
 config = context.config
 

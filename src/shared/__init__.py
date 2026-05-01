@@ -1,16 +1,12 @@
-"""Shared types used across modules."""
-from src.shared.candidate_profile import CandidateProfile
-from src.shared.email import Email
-from src.shared.linkedin_url import LinkedInUrl
-from src.shared.search_criteria import SearchCriteria
-from src.shared.seniority import Seniority
-from src.shared.tech_stack import TechStack
+"""DEPRECATED legacy shim — re-exports app.shared so old `from src.shared import X` imports still work.
 
-__all__ = [
-    "CandidateProfile",
-    "Email",
-    "LinkedInUrl",
-    "SearchCriteria",
-    "Seniority",
-    "TechStack",
-]
+Will be deleted after all imports are flipped to `from app.shared import X`.
+"""
+from app.shared import (  # noqa: F401
+    CandidateProfile,
+    Email,
+    LinkedInUrl,
+    SearchCriteria,
+    Seniority,
+    TechStack,
+)
