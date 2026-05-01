@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from src.companies.models import Company
-from src.leads.scorer import LeadScorer
-from src.people.models import DecisionMaker, DecisionMakerRole
-from src.shared import Email, TechStack
+from app.modules.applies.services.score import RelevanceScorer
+from app.modules.companies.models import Company
+from app.modules.people.models import DecisionMaker, DecisionMakerRole
+from app.shared import TechStack
 
 
 def test_cto_at_hiring_python_rust_startup_scores_high() -> None:
     target = TechStack.from_strings("python", "rust")
-    scorer = LeadScorer(target)
+    scorer = RelevanceScorer(target)
 
     company = Company(
         name="BlockFlow",
@@ -19,7 +19,7 @@ def test_cto_at_hiring_python_rust_startup_scores_high() -> None:
         full_name="Alex Smith",
         role=DecisionMakerRole.CTO,
         company_id=company.id,
-        email=Email("alex@blockflow.ai"),
+        contacts={"email": "alex@blockflow.ai"},
     )
 
     assert scorer.score(company, dm) >= 80
@@ -27,7 +27,7 @@ def test_cto_at_hiring_python_rust_startup_scores_high() -> None:
 
 def test_hr_at_random_company_scores_low() -> None:
     target = TechStack.from_strings("python", "rust")
-    scorer = LeadScorer(target)
+    scorer = RelevanceScorer(target)
 
     company = Company(
         name="RandomCo",

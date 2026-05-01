@@ -10,10 +10,15 @@ DATABASE_URL conventions (auto-fixed):
 """
 from __future__ import annotations
 
+import asyncio
 import os
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -76,3 +81,26 @@ def describe_db() -> str:
     if url.startswith("sqlite"):
         return f"SQLite file: {url.split('///')[-1]}"
     return url.split("@")[-1] if "@" in url else url
+
+
+_ALEMBIC_INI = Path(__file__).resolve().parent / "alembic.ini"
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+async def init_db() -> None:
+    """Apply pending Alembic migrations (`alembic upgrade head`).
+
+    CLI commands and orchestrators call this on startup so a fresh checkout /
+    blank database boots with the full schema. Real schema changes belong in
+    `alembic revision --autogenerate -m "..."`.
+    """
+    cmd = [sys.executable, "-m", "alembic", "-c", str(_ALEMBIC_INI), "upgrade", "head"]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        cwd=_PROJECT_ROOT,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("alembic upgrade head failed: {}", (err or b"").decode()[:500])

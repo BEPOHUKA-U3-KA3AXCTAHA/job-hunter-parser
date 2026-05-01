@@ -311,7 +311,7 @@ def hunt(
         ch = MessageChannel(eff_channel)
         repo = SqliteApplyRepository()
 
-        from src.messages.db import init_db
+        from app.infra.db import init_db
         await init_db()
 
         await run_pipeline(
@@ -338,7 +338,7 @@ def stats() -> None:
     from app.modules.applies.adapters.orm import ApplyRow
     from app.modules.companies.adapters.orm import CompanyRow
     from app.modules.people.adapters.orm import DecisionMakerRow
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -398,7 +398,7 @@ def companies(
     from sqlalchemy import select
     from app.infra.db import get_session_maker
     from app.modules.companies.adapters.orm import CompanyRow
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -451,7 +451,7 @@ def contacts(
     from app.infra.db import get_session_maker
     from app.modules.companies.adapters.orm import CompanyRow
     from app.modules.people.adapters.orm import DecisionMakerRow
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -521,7 +521,7 @@ def jobs_list(
     from sqlalchemy import or_, select
     from app.infra.db import get_session_maker
     from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -601,7 +601,7 @@ def stale(
     from sqlalchemy import or_, select
     from app.infra.db import get_session_maker
     from app.modules.companies.adapters.orm import CompanyRow
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -648,7 +648,7 @@ def retry(
     from sqlalchemy import select
     from app.infra.db import get_session_maker
     from app.modules.applies.adapters.orm import ApplyRow
-    from src.messages.db import init_db
+    from app.infra.db import init_db
     from app.modules.applies.adapters.sqla_repository import SqliteApplyRepository
 
     async def _run():
@@ -693,7 +693,7 @@ def curate(
     from app.infra.config import get_secrets
     from app.modules.applies.services.curate import filter_and_score, load_candidates_from_db
     from app.infra.db import get_session_maker
-    from src.messages.db import init_db
+    from app.infra.db import init_db
     from app.modules.applies.models import Message, MessageChannel, MessageStatus
     from app.modules.applies.adapters.sqla_repository import _upsert_message
     from app.shared import CandidateProfile
@@ -878,7 +878,7 @@ def easy_apply_cmd(
     Selectors copied from wodsuz/EasyApplyJobsBot (battle-tested aria-label-based).
     """
     from app.modules.automation.easy_apply_orchestrator import run_easy_apply_batch
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -914,7 +914,7 @@ def send_outreach_cmd(
       2. Run with --no-headless once to confirm Camoufox lands on /feed/
     """
     from app.modules.automation.services.send_orchestrator import run_send_batch
-    from src.messages.db import init_db
+    from app.infra.db import init_db
 
     async def _run():
         await init_db()
@@ -929,7 +929,7 @@ def reset_db() -> None:
     """Drop all tables and recreate (WIPES DATA, only for SQLite)."""
     import os
     from app.infra.db import database_url as _get_database_url
-    from src.messages.db import init_db
+    from app.infra.db import init_db
     url = _get_database_url()
     if url.startswith("sqlite"):
         path = url.split("///")[-1]

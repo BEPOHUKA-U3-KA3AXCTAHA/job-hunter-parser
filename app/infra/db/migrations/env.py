@@ -1,4 +1,4 @@
-"""Alembic env — async-aware, DB URL from DATABASE_URL env, target_metadata from src.messages.db.Base.
+"""Alembic env — async-aware, DB URL from DATABASE_URL env, target_metadata from app.modules.applies.db.Base.
 
 When the modular refactor lands, swap the import to `from app.modules.messages import Base`
 (or wherever the consolidated metadata ends up).

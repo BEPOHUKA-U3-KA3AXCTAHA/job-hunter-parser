@@ -10,7 +10,7 @@ from urllib.parse import quote_plus
 
 from loguru import logger
 
-from src.automation.selenium_bot import human_sleep, selenium_firefox
+from app.modules.automation.adapters.selenium_bot import human_sleep, selenium_firefox
 
 KEYWORDS = ["rust senior remote", "python backend remote senior"]
 

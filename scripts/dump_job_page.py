@@ -11,7 +11,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.automation.selenium_bot import selenium_firefox
+from app.modules.automation.adapters.selenium_bot import selenium_firefox
 
 OUT = Path("/tmp/jhp_diag")
 OUT.mkdir(parents=True, exist_ok=True)

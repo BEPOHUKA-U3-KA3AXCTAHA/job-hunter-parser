@@ -10,7 +10,7 @@ Window stays open up to 10 minutes — log in, solve any captcha, then it auto-d
 import asyncio
 import sys
 
-from src.automation.browser import browser_session
+from app.modules.automation.adapters.camoufox import browser_session
 
 
 async def main() -> int:

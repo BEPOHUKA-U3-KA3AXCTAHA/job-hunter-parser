@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.shared import Email
+from app.shared import Email
 
 
 def test_valid_email() -> None:

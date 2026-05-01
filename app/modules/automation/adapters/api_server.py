@@ -38,9 +38,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
 
-from app.infra.db import get_session_maker
+from app.infra.db import get_session_maker, init_db
 from app.modules.applies.adapters.orm import ApplyRow
-from src.messages.db import init_db  # compat: alembic-backed init_db
 
 
 @dataclass

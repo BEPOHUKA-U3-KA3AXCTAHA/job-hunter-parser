@@ -7,7 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.automation.selenium_bot import (
+from app.modules.automation.adapters.selenium_bot import (
     find_button_by_text,
     robust_click,
     selenium_firefox,

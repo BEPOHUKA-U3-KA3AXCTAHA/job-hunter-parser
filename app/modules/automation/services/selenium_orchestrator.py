@@ -30,11 +30,10 @@ from app.modules.automation.adapters.selenium_bot import (
     human_sleep,
     selenium_firefox,
 )
-from app.infra.db import get_session_maker
+from app.infra.db import get_session_maker, init_db
 from app.modules.applies.adapters.orm import ApplyRow
 from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow
 from app.modules.people.adapters.orm import DecisionMakerRow
-from src.messages.db import init_db  # compat: alembic-backed init_db
 
 MAX_APPLIES_PER_DAY = 30
 MAX_APPLIES_PER_BATCH = 5

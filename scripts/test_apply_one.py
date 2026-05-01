@@ -6,7 +6,7 @@ import time
 
 from loguru import logger
 
-from src.automation.selenium_bot import (
+from app.modules.automation.adapters.selenium_bot import (
     apply_to_job,
     find_button_by_text,
     selenium_firefox,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.shared import TechStack
+from app.shared import TechStack
 
 
 def test_normalization() -> None:

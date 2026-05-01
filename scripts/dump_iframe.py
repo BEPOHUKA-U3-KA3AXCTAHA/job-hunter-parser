@@ -2,7 +2,7 @@
 from __future__ import annotations
 import sys, time
 from loguru import logger
-from src.automation.selenium_bot import find_button_by_text, robust_click, selenium_firefox
+from app.modules.automation.adapters.selenium_bot import find_button_by_text, robust_click, selenium_firefox
 
 
 def main(job_id="4408058876"):
