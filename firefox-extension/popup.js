@@ -34,3 +34,32 @@ document.getElementById("start").addEventListener("click", async () => {
     status.className = "stats err";
   }
 });
+
+// "Fill THIS page" — sends fill_this_page to the active tab's content
+// script. Works on ANY URL (manifest <all_urls>): real Firefox session
+// means no Cloudflare/Turnstile detection, no automation flag.
+document.getElementById("fillpage").addEventListener("click", async () => {
+  const status = document.getElementById("status");
+  status.textContent = "filling this page…";
+  status.className = "stats";
+  try {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error("no active tab");
+    const result = await browser.tabs.sendMessage(tab.id, { type: "fill_this_page" });
+    if (!result) {
+      status.textContent = "no response from content script";
+      status.className = "stats err";
+      return;
+    }
+    if (result.outcome === "applied") {
+      status.textContent = "✅ " + (result.detail || "submitted");
+      status.className = "stats ok";
+    } else {
+      status.textContent = "✗ " + (result.detail || "failed");
+      status.className = "stats err";
+    }
+  } catch (e) {
+    status.textContent = "Crashed: " + e.message;
+    status.className = "stats err";
+  }
+});

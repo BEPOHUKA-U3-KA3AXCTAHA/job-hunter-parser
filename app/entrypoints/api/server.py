@@ -141,6 +141,48 @@ async def answer_questions_endpoint(req: AnswerQuestionsRequest) -> AnswerQuesti
     )
 
 
+class FillPlanRequest(BaseModel):
+    url: str
+    html: str
+    prior_errors: list[str] = []
+
+
+class FillPlanResponse(BaseModel):
+    actions: list[dict]
+    raw: str = ""  # Claude's raw response, for debugging
+
+
+@app.post("/fill-plan", response_model=FillPlanResponse)
+async def fill_plan(req: FillPlanRequest) -> FillPlanResponse:
+    """Used by the Firefox extension when filling an external ATS form.
+
+    Extension snapshots the rendered form HTML, posts it here. We pass
+    that to Claude Sonnet (with the user's profile + any prior submit
+    errors) and return a JSON action plan: [{action, selector, value}, ...].
+    The extension then executes those actions via real DOM events — no
+    Selenium, no automation flag, so Cloudflare Turnstile passes naturally.
+    """
+    from app.modules.automation.services.page_filler import (
+        ask_claude_for_fill_plan, snapshot_form_html,
+    )
+    from app.shared.candidate_profile import CandidateProfile
+
+    # Browser already sent the HTML — we don't need to scrape again, but we
+    # still want to apply the same cleanup (drop scripts/styles/long classes)
+    # so the LLM context stays manageable.
+    cleaned = req.html
+    # Re-use page_filler's cleanup by passing through its sanitizer would
+    # require splitting it out; for now just truncate.
+    if len(cleaned) > 120000:
+        cleaned = cleaned[:60000] + "\n...[truncated]...\n" + cleaned[-60000:]
+
+    profile = CandidateProfile()
+    actions = await ask_claude_for_fill_plan(
+        cleaned, profile.user_info or "", req.prior_errors or None,
+    )
+    return FillPlanResponse(actions=actions)
+
+
 @app.get("/next-job")
 async def next_job():
     """Pop next candidate. Returns 404-shape JSON when queue empty so the
