@@ -4,6 +4,10 @@ Different jobs ask different questions (salary expectation, years of Python,
 why this company, work auth, notice period, etc). Hard-coded heuristics
 won't scale — we feed every unfilled question to Claude with the candidate
 profile + job context and it returns answers shaped to the input type.
+
+Backed by the Claude CLI subprocess (user's Claude Max subscription) — no
+API key needed. Default model: claude-sonnet-4-6 (Haiku is too dumb for
+nuanced HR-questions per user feedback).
 """
 from __future__ import annotations
 
@@ -11,10 +15,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Literal
 
-import anthropic
 from loguru import logger
 
-from app.infra.config import get_secrets
+from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
 from app.shared import CandidateProfile
 
 QuestionType = Literal["text", "number", "tel", "email", "textarea", "select", "radio", "checkbox"]
@@ -116,35 +119,32 @@ async def answer_questions(
     job_description: str = "",
     company_name: str = "",
     profile: CandidateProfile | None = None,
-    model: str = "claude-haiku-4-5",
+    model: str = "claude-sonnet-4-6",
 ) -> list[FormAnswer]:
-    """Ask Claude to answer the given form questions, return answers in order.
+    """Ask Claude (via local `claude` CLI) to answer form questions, in order.
 
-    Returns empty list if the API key is missing — caller should treat as
+    Uses the user's Claude Max subscription via subprocess — no API key.
+    Returns empty list if the CLI call failed — caller should treat as
     'cannot auto-fill, bail to the human'.
     """
     if not questions:
         return []
 
-    api_key = get_secrets().anthropic_api_key
-    if not api_key:
-        logger.warning("ANTHROPIC_API_KEY not set — cannot auto-answer form questions")
-        return []
-
     profile = profile or CandidateProfile()
-    prompt = _build_prompt(questions, job_title, job_description, company_name, profile)
+    system = (
+        "You are filling out a job application form on behalf of the candidate. "
+        "Reply ONLY with a JSON array, one object per question, in the same order. "
+        "No prose, no markdown fences."
+    )
+    user_prompt = _build_prompt(questions, job_title, job_description, company_name, profile)
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        resp = client.messages.create(
-            model=model,
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        body = resp.content[0].text.strip()
-    except Exception as e:
-        logger.error("Claude question-answer failed: {}", e)
+    pool = ClaudeCLIPool(workers=1, model=model, timeout_s=120)
+    results = await pool.batch_generate([(system, user_prompt)])
+    if not results or not results[0].ok:
+        err = results[0].error if results else "no result"
+        logger.error("Claude CLI question-answer failed: {}", err)
         return []
+    body = results[0].text.strip()
 
     # Strip accidental markdown fences
     if body.startswith("```"):
