@@ -14,6 +14,7 @@ from app.modules.automation.adapters.external_apply.base import (
     AtsContext,
     AtsResult,
     click_button_by_text,
+    detect_form_errors,
     fill_input,
     find_visible,
     upload_resume,
@@ -126,6 +127,19 @@ class GenericHandler:
                 fields_filled=filled,
             )
         time.sleep(3)
+        # Many ATSes (Rippling, YC, Greenhouse-on-careers-page) keep the
+        # form open with a red error block when validation fails — clicking
+        # submit ≠ form accepted. Scan for it before reporting success.
+        errors = detect_form_errors(driver)
+        if errors:
+            joined = " | ".join(errors[:3])
+            logger.warning("generic[{}]: form rejected: {}", host, joined[:200])
+            return AtsResult(
+                success=False,
+                detail=f"generic[{host}]: validation: {joined[:200]}",
+                ats_name=self.name,
+                fields_filled=filled,
+            )
         return AtsResult(
             success=True,
             detail=f"generic[{host}]: clicked submit ({filled} fields)",

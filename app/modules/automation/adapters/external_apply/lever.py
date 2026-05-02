@@ -10,6 +10,7 @@ from app.modules.automation.adapters.external_apply.base import (
     AtsContext,
     AtsResult,
     click_submit,
+    detect_form_errors,
     fill_input,
     find_visible,
     upload_resume,
@@ -89,6 +90,15 @@ class LeverHandler:
             return AtsResult(success=False, detail="submit not found", ats_name=self.name, fields_filled=filled)
 
         time.sleep(3)
+        errors = detect_form_errors(driver)
+        if errors:
+            joined = " | ".join(errors[:3])
+            logger.warning("lever: form rejected: {}", joined[:200])
+            return AtsResult(
+                success=False,
+                detail=f"validation: {joined[:200]}",
+                ats_name=self.name, fields_filled=filled,
+            )
         return AtsResult(success=True, detail=f"submitted ({filled} fields)", ats_name=self.name, pages=1, fields_filled=filled)
 
     def _extract_lever_questions(self, driver) -> list[dict]:
