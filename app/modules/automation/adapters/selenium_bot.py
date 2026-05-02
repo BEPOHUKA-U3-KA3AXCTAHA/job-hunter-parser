@@ -704,11 +704,95 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
         return filled;
     """
     try:
-        return driver.execute_script(js, [
+        n = driver.execute_script(js, [
             {"question": q, "answer": a} for q, a in qa_pairs
         ]) or 0
     except Exception as e:
         logger.warning("fill_answers failed: {}", e)
+        return 0
+
+    # Some text inputs are autocomplete fields (LinkedIn city / location):
+    # typing alone isn't enough — a <ul> dropdown with role="option" appears
+    # and the user is expected to click one. After the bulk fill, give the
+    # dropdown a moment to render, then click the option that best matches
+    # each answer we typed.
+    text_pairs = [
+        (q.get("_selector"), a) for q, a in qa_pairs
+        if a and q.get("type") in ("text", "tel", "email", "number", "")
+    ]
+    if text_pairs:
+        time.sleep(0.6)
+        _click_autocomplete_options(driver, text_pairs)
+    return n
+
+
+def _click_autocomplete_options(driver, text_pairs: list[tuple[str, str]]) -> int:
+    """For each (input selector, typed answer) pair, look for a visible
+    [role='option'] dropdown that appeared after typing and click the one
+    whose text best matches the answer.
+    """
+    js = JS_WALK_PROLOG + """
+        const pairs = arguments[0];
+        function findInput(sel) {
+            for (const r of [document, ...Array.from(deepNodes(document))
+                    .filter(n => n.shadowRoot).map(n => n.shadowRoot)]) {
+                try { const x = r.querySelector(sel); if (x) return x; } catch (e) {}
+            }
+            return null;
+        }
+        let clicked = 0;
+        // Collect all currently visible role=option elements across shadow DOM
+        const allOpts = [];
+        for (const o of deepNodes(document)) {
+            if (!o.getAttribute) continue;
+            if (o.getAttribute('role') !== 'option' && o.tagName !== 'LI') continue;
+            if (!isVisible(o)) continue;
+            const t = (o.textContent || '').trim();
+            if (!t || t.length > 200) continue;
+            allOpts.push(o);
+        }
+        if (!allOpts.length) return 0;
+
+        for (const {selector, answer} of pairs) {
+            const inp = selector ? findInput(selector) : null;
+            const inpRect = inp && inp.getBoundingClientRect ? inp.getBoundingClientRect() : null;
+            const ans = (answer || '').toLowerCase().trim();
+            if (!ans) continue;
+            // Score each option: must be near the input (within ~400 px below)
+            // AND text starts with / contains the answer.
+            let best = null;
+            let bestScore = -1;
+            for (const o of allOpts) {
+                const t = (o.textContent || '').toLowerCase().trim();
+                let score = 0;
+                if (t === ans) score += 100;
+                else if (t.startsWith(ans)) score += 60;
+                else if (t.includes(ans)) score += 30;
+                else continue;
+                if (inpRect) {
+                    const oRect = o.getBoundingClientRect();
+                    const dy = oRect.top - inpRect.bottom;
+                    if (dy > -50 && dy < 500) score += 20;  // near and below
+                    else score -= 30;
+                }
+                if (score > bestScore) { best = o; bestScore = score; }
+            }
+            if (best && bestScore > 0) {
+                best.click();
+                clicked++;
+            }
+        }
+        return clicked;
+    """
+    try:
+        n = driver.execute_script(js, [
+            {"selector": sel, "answer": ans} for sel, ans in text_pairs
+        ]) or 0
+        if n:
+            logger.info("autocomplete: clicked {} dropdown option(s)", n)
+        return n
+    except Exception as e:
+        logger.debug("autocomplete click pass failed: {}", e)
         return 0
 
 
