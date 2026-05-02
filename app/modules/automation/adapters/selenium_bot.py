@@ -515,11 +515,9 @@ def extract_unfilled_questions(driver) -> list[dict]:
                     const grp = checkboxGroup(el);
                     if (grp.length >= 2) {
                         // single-choice checkbox group → treat like radio.
-                        // Don't require asterisk on Yes/No labels — the asterisk lives on
-                        // the question label one level up. If 2+ checkboxes share a parent
-                        // and none are checked, treat the group as a required choice.
                         for (const cb of grp) seenCheckboxes.add(cb);
                         if (grp.some(cb => cb.checked)) continue;
+                        const groupRequired = grp.some(cb => isRequired(cb)) || true;
                         const options = grp.map(cb => findLabel(cb) || cb.value || '');
                         // Group label: walk up from first cb to find the question text
                         let groupLabel = '';
@@ -546,10 +544,9 @@ def extract_unfilled_questions(driver) -> list[dict]:
                     }
                     seenCheckboxes.add(el);
                     if (el.checked) continue;
-                    if (!isRequired(el)) continue;
                     out.push({
                         label: findLabel(el), type: 'checkbox', options: [],
-                        name: el.name || '', placeholder: '', required: true,
+                        name: el.name || '', placeholder: '', required: isRequired(el),
                         _selector: cssPath(el),
                     });
                     continue;
@@ -558,7 +555,6 @@ def extract_unfilled_questions(driver) -> list[dict]:
                     if (seenRadioNames.has(el.name)) continue;
                     const grp = radioGroup(el);
                     if (grp.some(r => r.checked)) { seenRadioNames.add(el.name); continue; }
-                    if (!grp.some(r => isRequired(r))) continue;
                     seenRadioNames.add(el.name);
                     const options = grp.map(r => {
                         const lbl = findLabel(r);
@@ -567,33 +563,31 @@ def extract_unfilled_questions(driver) -> list[dict]:
                     out.push({
                         label: findLabel(grp[0]).replace(/\\s+\\S+\\s*$/, '').trim() || el.name,
                         type: 'radio', options,
-                        name: el.name || '', placeholder: '', required: true,
+                        name: el.name || '', placeholder: '', required: grp.some(r => isRequired(r)),
                         _selector: cssPath(el),
                     });
                     continue;
                 }
-                // text/number/tel/email
+                // text/number/tel/email — surface optional fields too; the LLM
+                // decides whether to fill via confidence threshold.
                 if (el.value && el.value.trim()) continue;
-                if (!isRequired(el)) continue;
                 out.push({
                     label: findLabel(el), type: t || 'text', options: [],
                     name: el.name || el.id || '', placeholder: el.placeholder || '',
-                    required: true, _selector: cssPath(el),
+                    required: isRequired(el), _selector: cssPath(el),
                 });
             } else if (tag === 'TEXTAREA') {
                 if (el.value && el.value.trim()) continue;
-                if (!isRequired(el)) continue;
                 out.push({
                     label: findLabel(el), type: 'textarea', options: [],
                     name: el.name || el.id || '', placeholder: el.placeholder || '',
-                    required: true, _selector: cssPath(el),
+                    required: isRequired(el), _selector: cssPath(el),
                 });
             } else if (tag === 'SELECT') {
                 const cur = (el.value || '').trim();
                 const opts = Array.from(el.options || []).map(o => o.text.trim()).filter(Boolean);
-                // 'Select an option' placeholder is unfilled
                 if (cur && !/^select|^choose|^please/i.test(cur)) continue;
-                if (!isRequired(el) && opts.length === 0) continue;
+                if (opts.length === 0) continue;
                 out.push({
                     label: findLabel(el), type: 'select',
                     options: opts.filter(o => !/^select|^choose|^please/i.test(o)),
@@ -838,9 +832,20 @@ async def _autofill_via_llm(driver, page_idx: int, job_tag: str) -> int:
     answers = await answer_questions(questions)
     if not answers:
         return 0
-    qa_pairs = [(raw_qs[i], answers[i].answer) for i in range(len(answers))]
+    # For optional fields, require higher confidence (≥0.6) before we touch them.
+    # Required fields always filled with whatever the LLM returned.
+    qa_pairs = []
+    skipped_optional = 0
+    for i, (q_raw, q, a) in enumerate(zip(raw_qs, questions, answers)):
+        if not q.required and a.confidence < 0.6:
+            skipped_optional += 1
+            continue
+        qa_pairs.append((q_raw, a.answer))
     n = fill_answers(driver, qa_pairs)
-    logger.info("[p{}] LLM filled {}/{} fields", page_idx + 1, n, len(answers))
+    logger.info(
+        "[p{}] LLM filled {}/{} fields (skipped {} low-conf optional)",
+        page_idx + 1, n, len(qa_pairs), skipped_optional,
+    )
     if n:
         _diag_save(driver, f"{job_tag}_after_autofill_p{page_idx}")
     return n

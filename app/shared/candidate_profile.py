@@ -1,11 +1,37 @@
+"""Candidate context.
+
+For LLM-driven form autofill: `cv_text` (extracted from resume_en.pdf) is
+the primary source of truth. The hand-coded fields below are used by the
+outreach generator (Claude DM messages) and the relevance scorer — they
+hold structured facts that are easier to compute over than raw CV text.
+Visa / work-authorization facts live here too because they're not in the
+CV but the LLM needs them for sponsorship questions.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cache
+from pathlib import Path
+
+
+@cache
+def _load_cv_text() -> str:
+    """Extract full CV text from resume_en.pdf at the project root.
+    Returns empty string if the file is missing — tests work without it."""
+    cv_path = Path(__file__).resolve().parents[2] / "resume_en.pdf"
+    if not cv_path.exists():
+        return ""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(str(cv_path))
+        return "\n".join(p.extract_text() for p in reader.pages).strip()
+    except Exception:
+        return ""
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateProfile:
-    """Who is searching. Used by LLM to personalize outreach messages."""
+    """Who is searching."""
 
     name: str = "Sergey Sergeev"
     email: str = "serzhserg98@gmail.com"
@@ -45,3 +71,22 @@ class CandidateProfile:
             "Python Backend Engineer",
         ]
     )
+
+    # ---- ATS form-autofill context ----------------------------------------
+    # Full CV text — primary source of truth for the answer_questions LLM.
+    cv_text: str = field(default_factory=_load_cv_text)
+
+    # Visa / work-authorization facts (not in the CV — encode explicitly so
+    # the LLM answers sponsorship questions correctly for EU-based roles).
+    eu_citizen: bool = False
+    work_permit_eu: bool = False
+    permit_status: str = (
+        "Currently in Montenegro (non-EU). No work permit in any EU country yet "
+        "(applying for boravak/residence in Montenegro). Would require visa "
+        "sponsorship for any EU-based or in-country role; remote-from-Montenegro "
+        "roles need no sponsorship."
+    )
+
+    # Salary preferences (CV doesn't mention).
+    salary_floor_eur: int = 70_000
+    salary_floor_usd: int = 80_000

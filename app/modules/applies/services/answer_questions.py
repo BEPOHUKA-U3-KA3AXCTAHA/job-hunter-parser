@@ -48,9 +48,6 @@ class FormAnswer:
     reasoning: str = ""                     # short why-this-answer (for logs / debugging)
 
 
-_DEFAULT_SALARY_EUR = 70_000  # Sergey's preferred floor; LLM may raise based on job seniority/location
-
-
 def _build_prompt(
     questions: list[FormQuestion],
     job_title: str,
@@ -58,56 +55,51 @@ def _build_prompt(
     company_name: str,
     profile: CandidateProfile,
 ) -> str:
-    linkedin_url = f"https://www.linkedin.com/in/{profile.linkedin}/"
-    profile_block = (
-        f"Name: {profile.name}\n"
-        f"Email: {profile.email}\n"
-        f"LinkedIn URL: {linkedin_url}\n"
-        f"Telegram: {profile.telegram}\n"
-        f"Location: {profile.location}\n"
-        f"Experience: {profile.experience_years}+ years\n"
-        f"Tech stack: {', '.join(profile.tech_stack)}\n"
-        f"Summary: {profile.summary}\n"
-        f"Highlights:\n  - " + "\n  - ".join(profile.highlights) + "\n"
-        f"Target roles: {', '.join(profile.target_roles)}\n"
-        f"Salary floor for Senior Backend remote: ~{_DEFAULT_SALARY_EUR} EUR/year gross "
-        f"(adjust upward for FAANG / US-payroll / CTO-track roles)"
+    cv = profile.cv_text or "(CV file not available — fall back to general knowledge.)"
+    visa_block = (
+        f"- EU citizen: {'yes' if profile.eu_citizen else 'NO'}\n"
+        f"- Work permit in EU: {'yes' if profile.work_permit_eu else 'NO'}\n"
+        f"- Status: {profile.permit_status}"
     )
-
     job_block = (
         f"Title: {job_title}\n"
         f"Company: {company_name}\n"
-        f"Description (snippet): {(job_description or '').strip()[:1500]}"
+        f"Description (snippet): {(job_description or '').strip()[:2000]}"
     )
 
     qs_block_lines = []
     for i, q in enumerate(questions, 1):
-        opts = f" Options (must reply with one verbatim): {q.options}" if q.options else ""
-        req = " [REQUIRED]" if q.required else ""
+        opts = f" Options (reply with one verbatim): {q.options}" if q.options else ""
+        req = " [REQUIRED]" if q.required else " [optional — fill if you have a confident answer]"
         qs_block_lines.append(
             f"{i}. [type={q.type}{req}] {q.label}{opts}"
             + (f"\n   placeholder: {q.placeholder}" if q.placeholder else "")
         )
     qs_block = "\n".join(qs_block_lines)
 
-    return f"""You are filling out a job application form on behalf of the candidate. Answer every question truthfully based on the candidate profile below. Reply ONLY with a JSON array of objects, one per question, in the same order.
+    return f"""You are filling out a job application form on behalf of the candidate. Use the candidate's CV (verbatim copy below) as the PRIMARY source of truth for every factual answer. Use the visa block for any work-authorization / sponsorship question. Reply ONLY with a JSON array, one object per question, in the same order.
 
 Each object: {{"answer": "<string>", "confidence": <0.0-1.0>, "reasoning": "<short why>"}}
 
 Rules:
-- For numeric / salary questions: respond with the number ONLY (e.g. "70000", not "€70,000" or "70k EUR"). The form parses digits.
-- For select/radio: pick exactly one option from the list, character-for-character.
-- For "Are you authorized to work in <country>?" / visa questions: candidate is in Montenegro, eligible for remote roles globally; if the role is in EU and a permit is required, answer "No" honestly. For Yes/No questions about remote work willingness — "Yes".
-- For "How did you hear about us?" — "LinkedIn".
-- For "LinkedIn", "LinkedIn URL", "LinkedIn profile" — answer with the LinkedIn URL listed above verbatim ({linkedin_url}). NEVER answer empty or "not provided" for LinkedIn fields.
-- For "Years of <tech>" — derive from the profile (Python: {profile.experience_years}, Rust: 3, Postgres: {profile.experience_years}, etc.). Default to {profile.experience_years} if unsure.
-- For "Why are you interested?" / cover-letter style: 2-3 sentences max, reference the company name and one job-description detail.
-- If a question has no good answer (e.g. asks for a US SSN, a US-only ID), answer "" and set confidence=0.
+- Treat the CV as ground truth. If a fact is in the CV (LinkedIn handle, languages, years of experience, projects, skills, education) — use it verbatim. NEVER fabricate a value the CV doesn't support.
+- LinkedIn / LinkedIn URL field: use the LinkedIn handle from the CV. If the CV says "LinkedIn: <handle>" then answer "https://www.linkedin.com/in/<handle>/".
+- Numeric / salary questions: respond with the number ONLY (e.g. "{profile.salary_floor_eur}", not "€{profile.salary_floor_eur:,}"). Default floor for senior backend remote: {profile.salary_floor_eur} EUR / {profile.salary_floor_usd} USD per year, adjust upward for FAANG / US-payroll / staff+ roles.
+- Visa / sponsorship: candidate is NOT an EU citizen and has NO EU work permit (see visa block). If the role is in an EU country (Portugal, Germany, etc.) and the question asks "do you require sponsorship to work in <country>?" — answer YES (sponsorship needed). The fact that this question is ASKED at all means the role is not pure remote-anywhere. For "Are you authorized to work in <country>?" — answer NO unless the country happens to be Montenegro/Russia.
+- English level — take from the CV's LANGUAGES line VERBATIM. If CV says "B2", do NOT upgrade to "Advanced" or "Fluent". Match the option closest to "B2" / "Upper Intermediate".
+- Years of <tech>: derive from the CV. Years of total commercial experience = years since the earliest role.
+- "Why are you interested?" / cover-letter style: 2-3 sentences max, reference the company name + one specific job-description detail + one matching CV highlight.
+- "How did you hear about us?" — "LinkedIn".
+- Optional fields: only fill if confidence ≥ 0.6. Otherwise answer "" with confidence < 0.5 and the bot will skip.
+- If you genuinely cannot answer (e.g. US SSN, country-specific ID), answer "" and set confidence=0.
 
 Return ONLY the JSON array, no prose, no markdown fences.
 
-CANDIDATE PROFILE:
-{profile_block}
+CANDIDATE CV (ground truth):
+{cv}
+
+VISA / WORK AUTHORIZATION:
+{visa_block}
 
 JOB:
 {job_block}
