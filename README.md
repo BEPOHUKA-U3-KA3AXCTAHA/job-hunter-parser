@@ -121,7 +121,7 @@ modules/<m>/adapters     ─implement→         modules/<m>/ports
 infra/, shared/    ←─── NEVER import from modules/, entrypoints/
 ```
 
-**The cardinal cross-module import rule:** between modules, only via the neighbour's `__init__.py`. Never reach into another module's internals.
+**Cardinal cross-module import rule:** between modules, only via the neighbour's `__init__.py`. Never reach into another module's internals.
 
 ```python
 # ✅ allowed
@@ -131,11 +131,23 @@ from app.modules.applies import Apply, ApplyRepository
 
 # ❌ forbidden — goes around the public API
 from app.modules.companies.models.company import Company
-from app.modules.companies.adapters.orm import CompanyRow
-from app.modules.people.adapters.apollo import ApolloAdapter
+from app.modules.people.adapters.search.apollo import ApolloAdapter
 ```
 
 The `__init__.py` is the module's only contract. Internals can be renamed/moved freely as long as the public surface is preserved.
+
+**Infra-import rule:** `app.infra.db.orm.*` (Row classes, sessions, raw SQL) may be imported only by **adapters** and **entrypoints** (composition roots). `models/`, `ports/`, and `services/` must stay ORM-blind — they speak in domain entities, not in `Row` objects. This keeps the hexagon's inside (domain + use-cases) decoupled from the persistence layer.
+
+```python
+# ✅ allowed in <module>/adapters/repository/sqla.py and entrypoints/cli/*.py
+from app.infra.db import get_session_maker, transaction
+from app.infra.db.orm.companies import CompanyRow
+
+# ❌ forbidden in <module>/services/*.py and <module>/models/*.py
+from app.infra.db.orm.companies import CompanyRow   # leaks ORM into the domain
+```
+
+Known violations (technical debt, not the desired state): `applies/services/curate.py`, `companies/services/job_enrich.py`, and the three `automation/services/*_orchestrator.py` files currently import Row classes directly. Each should grow a proper repository adapter and the service should depend on a port instead. Refactor pending.
 
 ### Browser automation: why Selenium + real Firefox profile
 
