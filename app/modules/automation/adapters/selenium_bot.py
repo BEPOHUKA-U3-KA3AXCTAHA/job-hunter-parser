@@ -881,9 +881,9 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
             human_sleep(2.5, 4)
             return ApplyResult(ApplyOutcome.APPLIED, pages=page_idx + 1)
 
-        # Review? — clicking moves to summary page; Submit should appear next iteration.
-        # If Review was already clicked on the previous iteration, treat the modal as
-        # stuck and bail rather than spamming clicks.
+        # Review? — same flow as Continue: proactive autofill if unfilled,
+        # then click. If Review was clicked on the previous iteration AND the
+        # button is still here, the modal is stuck — bail with diag.
         review = find_button_by_text(driver, r"^review( your application)?$", timeout=1)
         if review:
             if last_was_review:
@@ -898,6 +898,16 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
                     detail=f"Review loop at page {page_idx + 1} — Submit never appeared",
                     pages=page_idx + 1,
                 )
+            # Proactive autofill BEFORE clicking Review (the page may have
+            # required fields with no red errors yet).
+            pre_qs = extract_unfilled_questions(driver)
+            if pre_qs:
+                logger.info(
+                    "[p{}] {} unfilled required field(s) detected pre-Review — autofilling",
+                    page_idx + 1, len(pre_qs),
+                )
+                asyncio.run(_autofill_via_llm(driver, page_idx, job_tag))
+                human_sleep(0.5, 1.0)
             logger.info("Review at page {}", page_idx + 1)
             _diag_save(driver, f"{job_tag}_review_p{page_idx}")
             robust_click(driver, review, "review")
