@@ -2,7 +2,16 @@
 
 Multi-channel job hunting automation: scrape job boards, find decision makers, generate personalized outreach via LLM, send Easy-Apply through Selenium, ship DMs through an authenticated LinkedIn session.
 
-Built as a **modular monolith** with **hexagonal architecture inside each module** and **vertical slicing by business domain** — same shape as the [Cosmic Python](https://www.cosmicpython.com) reference but adapted for a CLI-only / no-HTTP project.
+Built as a **modular monolith** with **hexagonal architecture inside each module** and **vertical slicing by business domain**.
+
+Inspired by [Cosmic Python](https://www.cosmicpython.com), with deviations:
+
+- **N bounded contexts**, not one — separate modules for companies, people, applies, automation
+- **Declarative SQLAlchemy** (`mapped_column`, `relationship`), not their imperative `Table()` + `mapper()`
+- **`typing.Protocol`** for ports, not `abc.ABC` — structural typing fits here better
+- **No `bootstrap.py`** — adapters are wired directly in the CLI command that needs them (composition root per command, no global container)
+- **No Unit of Work / Domain Events / Message Bus** — would be over-engineering for a CLI tool; will add when a real need shows up
+- **CLI-only** — no FastAPI / HTTP layer; the only "driving" entrypoint is `app/entrypoints/cli/`
 
 ## Why
 
