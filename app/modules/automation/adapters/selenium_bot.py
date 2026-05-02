@@ -869,6 +869,15 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
         logger.info("modal appeared")
         return _walk_modal(driver, profile_phone, job_tag)
 
+    # External Apply — LinkedIn shows "Apply" (no Easy badge) that opens the
+    # employer's ATS in a new tab. Match the bare "Apply" button by aria-label
+    # "Apply to *" (NOT "Easy Apply to *", filtered above).
+    ext_btn = _find_external_apply_button(driver)
+    if ext_btn:
+        result = _try_external_apply(driver, ext_btn, company_name="", job_title="", job_url=job_url, job_tag=job_tag)
+        if result:
+            return result
+
     # Fallback: "I'm interested" — LinkedIn's soft-signal alternative
     interested = find_button_by_text(driver, r"i.?m interested", timeout=2)
     if interested:
@@ -878,7 +887,6 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
             return ApplyResult(ApplyOutcome.FAILED, "I'm interested click failed")
         logger.info("clicked I'm interested (soft-signal)")
         human_sleep(1.5, 3)
-        # Some flows show a confirmation modal with "Submit" or auto-close
         confirm = find_button_by_text(driver, r"^(?:submit|confirm|done|got it)$", timeout=2)
         if confirm:
             robust_click(driver, confirm, "interested_confirm")
@@ -887,9 +895,106 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
 
     # Neither button → really no apply path
     dump = dump_buttons(driver)
-    logger.info("No Apply or I'm interested. Buttons: {}", dump)
+    logger.info("No Apply / Easy Apply / I'm interested. Buttons: {}", dump)
     _diag_save(driver, f"{job_tag}_no_apply")
     return ApplyResult(ApplyOutcome.NO_EASY_APPLY, detail=f"buttons={dump}")
+
+
+def _find_external_apply_button(driver):
+    """Find the LinkedIn 'Apply' button (NOT Easy Apply) that opens an
+    external ATS in a new tab. Matches `aria-label='Apply to <company>'`
+    or button text 'Apply' (no 'Easy' prefix)."""
+    js = JS_WALK_PROLOG + """
+        for (const el of deepNodes(document)) {
+            if (el.tagName !== 'BUTTON' && el.tagName !== 'A') continue;
+            if (el.disabled) continue;
+            if (!isVisible(el)) continue;
+            const text = (el.textContent || '').trim().toLowerCase();
+            const aria = ((el.getAttribute && el.getAttribute('aria-label')) || '').toLowerCase();
+            // Skip Easy Apply — that's handled separately
+            if (text.includes('easy apply') || aria.includes('easy apply')) continue;
+            // Match 'Apply' (button/anchor) or aria-label 'Apply to ...'
+            if (/^apply$/.test(text) || /^apply\\b/.test(aria) || /apply on company website/i.test(text + ' ' + aria)) {
+                return el;
+            }
+        }
+        return null;
+    """
+    try:
+        return driver.execute_script(js)
+    except Exception:
+        return None
+
+
+def _try_external_apply(driver, ext_btn, company_name: str, job_title: str, job_url: str, job_tag: str):
+    """Click the external Apply button, switch to the new tab, dispatch to the
+    matching ATS handler. Returns ApplyResult on success/failure, or None if
+    the click didn't open a new tab (caller falls back to other paths)."""
+    from app.modules.applies import default_user_repo
+    from app.modules.automation.adapters.external_apply import (
+        AtsContext, channel_for_handler, pick_handler,
+    )
+
+    main_handles = driver.window_handles[:]
+    human_sleep(0.6, 1.2)
+    try:
+        ext_btn.click()
+    except Exception as e:
+        logger.warning("external Apply click failed: {}", e)
+        return None
+
+    # Wait for new tab
+    end = time.monotonic() + 6
+    new_handle = None
+    while time.monotonic() < end:
+        time.sleep(0.3)
+        diff = [h for h in driver.window_handles if h not in main_handles]
+        if diff:
+            new_handle = diff[0]
+            break
+    if not new_handle:
+        logger.info("external Apply click did not open a new tab")
+        return None
+
+    driver.switch_to.window(new_handle)
+    time.sleep(2)
+    ats_url = driver.current_url
+    handler = pick_handler(ats_url)
+    logger.info("external apply: ATS={} URL={}", handler.name, ats_url[:120])
+
+    try:
+        # Pull user info from DB to seed the handler context
+        ctx = AtsContext(
+            company=company_name or "(unknown)",
+            job_title=job_title,
+            job_url=job_url,
+            ats_url=ats_url,
+        )
+        result = handler.apply(driver, ctx)
+    except Exception as e:
+        logger.exception("ATS handler {} crashed: {}", handler.name, e)
+        result = type("R", (), {"success": False, "detail": f"handler crashed: {e}",
+                                "ats_name": handler.name, "fields_filled": 0, "pages": 0})()
+
+    _diag_save(driver, f"{job_tag}_ext_{handler.name}_done")
+    # Close the ATS tab + switch back to LinkedIn
+    try:
+        driver.close()
+    except Exception:
+        pass
+    driver.switch_to.window(main_handles[0])
+
+    if result.success:
+        return ApplyResult(
+            ApplyOutcome.APPLIED,
+            detail=f"external/{result.ats_name}: {result.detail}",
+            pages=result.pages,
+        )
+    return ApplyResult(
+        ApplyOutcome.FAILED,
+        detail=f"external/{result.ats_name}: {result.detail}",
+        pages=result.pages,
+    )
 
 
 async def _autofill_via_llm(driver, page_idx: int, job_tag: str) -> int:
