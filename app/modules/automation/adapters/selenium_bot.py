@@ -677,6 +677,64 @@ def extract_unfilled_questions(driver) -> list[dict]:
             }
         }
 
+        // --- Pass 1.5: div-based comboboxes (Rippling, Workday) ---
+        // Custom dropdowns rendered as
+        //   <div role="combobox" aria-haspopup="listbox" aria-required="true">
+        //     <p>Select</p>
+        //   </div>
+        // are not <select> elements so the SELECT branch above misses them.
+        // Detect required ones with a clear ancestor question label, and
+        // emit them as type='select' with an OPEN marker — fill_answers
+        // opens the dropdown, collects options, and clicks the matching one.
+        const seenCombo = new Set();
+        for (const el of deepNodes(document)) {
+            if (dialogPresent && !isInDialog(el)) continue;
+            if (el.tagName !== 'DIV') continue;
+            const role = el.getAttribute && el.getAttribute('role');
+            if (role !== 'combobox') continue;
+            const haspopup = el.getAttribute('aria-haspopup');
+            if (haspopup !== 'listbox' && haspopup !== 'menu') continue;
+            const required = el.getAttribute('aria-required') === 'true';
+            // We only want fields the user MUST fill — country code pickers
+            // typically don't have aria-required; sponsorship/visa dropdowns
+            // do.
+            if (!required) continue;
+            if (seenCombo.has(el)) continue;
+            seenCombo.add(el);
+            // Skip if already chosen (label text ≠ 'select'/'choose'/empty).
+            const innerTxt = (el.textContent || '').trim();
+            if (innerTxt && !/^(select|choose|please)/i.test(innerTxt)) continue;
+            // Walk up looking for the question text in a descendant <p> /
+            // <label> / <h*> of an ancestor (Rippling nests the question in
+            // a sibling DIV at the field-section level, not as a direct
+            // sibling of the combobox).
+            let qLabel = '';
+            let p = el.parentElement;
+            for (let i = 0; i < 6 && p && !qLabel; i++) {
+                const cands = p.querySelectorAll
+                    ? p.querySelectorAll(':scope p, :scope label, :scope legend, :scope h1, :scope h2, :scope h3, :scope h4, :scope h5, :scope h6')
+                    : [];
+                for (const cand of cands) {
+                    if (cand === el || el.contains(cand)) continue;
+                    const txt = (cand.textContent || '').trim();
+                    if (!txt || txt.length > 400) continue;
+                    if (!/[?:*]/.test(txt) && !/required/i.test(txt)) continue;
+                    if (/^(select|choose|please)/i.test(txt)) continue;
+                    qLabel = txt;
+                    break;
+                }
+                p = p.parentElement;
+            }
+            out.push({
+                label: qLabel || 'select',
+                type: 'select',
+                options: [],   // populated at fill time after opening dropdown
+                name: el.id || '', placeholder: '', required: true,
+                _selector: cssPath(el),
+                _div_combobox: true,
+            });
+        }
+
         // --- Second pass: button-style Yes/No toggle groups (Ashby) ---
         // <div class="..._yesno..."><button>Yes</button><button>No</button>
         //   <input type="checkbox" hidden></div>
@@ -729,10 +787,61 @@ def extract_unfilled_questions(driver) -> list[dict]:
         return out;
     """
     try:
-        return driver.execute_script(js) or []
+        raw = driver.execute_script(js) or []
     except Exception as e:
         logger.warning("extract_unfilled_questions failed: {}", e)
         return []
+
+    # Post-process: div-based comboboxes need their options harvested
+    # from the listbox that appears only when the dropdown is opened.
+    # Click each, scrape role=option texts, then close.
+    for q in raw:
+        if not q.get("_div_combobox"):
+            continue
+        if q.get("options"):
+            continue
+        sel = q.get("_selector") or ""
+        try:
+            opts = driver.execute_script(
+                """
+                function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                    if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                    const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                const sel = arguments[0];
+                let combo = null;
+                for (const r of [document, ...Array.from(dn(document))
+                        .filter(n => n.shadowRoot).map(n => n.shadowRoot)]) {
+                    try { const x = r.querySelector(sel); if (x) { combo = x; break; } } catch(e) {}
+                }
+                if (!combo) return [];
+                combo.click();
+                return new Promise((resolve) => {
+                    setTimeout(() => {
+                        const out = [];
+                        for (const el of dn(document)) {
+                            if (el.getAttribute && el.getAttribute('role') === 'option') {
+                                const r = el.getBoundingClientRect();
+                                if (r.width < 1 || r.height < 1) continue;
+                                const t = (el.textContent || '').trim();
+                                if (t) out.push(t);
+                            }
+                        }
+                        // Close the dropdown by clicking the combobox again
+                        // (or pressing Escape — Rippling handles both).
+                        try { combo.click(); } catch(e) {}
+                        resolve(out);
+                    }, 600);
+                });
+                """,
+                sel,
+            )
+            if opts:
+                q["options"] = opts
+                logger.info("div-combobox '{}' opts: {}", q["label"][:60], opts[:6])
+        except Exception as e:
+            logger.debug("combobox option harvest failed for {}: {}", sel[:50], e)
+
+    return raw
 
 
 def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
@@ -855,6 +964,12 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
                     // below clicks them via real Selenium events with a
                     // settle pause between each so Ashby's reflow doesn't
                     // strand stale element references.
+                } else if (tag === 'DIV' && question._div_combobox) {
+                    // Div-based combobox (Rippling sponsorship dropdown):
+                    // click to open, find option whose visible text equals
+                    // the LLM answer, click it. Skip here too — Python-side
+                    // fallback handles it via Selenium so React sees real
+                    // pointer events.
                 }
             } catch (e) { console.warn('[JHP] fill failed', e); }
         }
@@ -899,6 +1014,50 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
     # 2) Button-style yes/no toggles: re-walk via JS to find the right
     #    container by index, then click via Selenium so the button receives
     #    a trusted event (Ashby state listeners ignore JS-dispatched clicks).
+    # 3) Div-based comboboxes: click to open, find option matching answer,
+    #    click. Done before yesno so the spawned dropdowns settle first.
+    combo_qs = [(q, a) for q, a in qa_pairs if a and q.get("_div_combobox")]
+    for q, a in combo_qs:
+        sel = q.get("_selector") or ""
+        try:
+            combo = driver.find_element(By.CSS_SELECTOR, sel)
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", combo)
+            combo.click()
+            time.sleep(0.5)
+            # Find matching role=option (case-insensitive substring match
+            # so 'Yes' matches 'Yes, I require sponsorship', etc.).
+            target = driver.execute_script(
+                """
+                function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                    if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                    const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                const want = arguments[0].toLowerCase();
+                let exact = null, contains = null;
+                for (const el of dn(document)) {
+                    if (el.getAttribute && el.getAttribute('role') === 'option') {
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 1 || r.height < 1) continue;
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        if (!t) continue;
+                        if (t === want) return el;
+                        if (!contains && t.includes(want)) contains = el;
+                    }
+                }
+                return contains;
+                """,
+                a,
+            )
+            if target:
+                target.click()
+                time.sleep(0.4)
+            else:
+                logger.debug("combobox option '{}' not found in dropdown", a)
+                # Press Escape to close the unselected dropdown.
+                from selenium.webdriver.common.keys import Keys
+                combo.send_keys(Keys.ESCAPE)
+        except Exception as e:
+            logger.debug("div-combobox fill failed for {}: {}", sel[:50], e)
+
     yesno_qs = [(q, a) for q, a in qa_pairs if a and q.get("_button_group")]
     if yesno_qs:
         # Sort by index — click in document order so re-renders don't confuse
