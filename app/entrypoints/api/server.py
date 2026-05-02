@@ -20,7 +20,7 @@ How it works:
   3. Extension applies, posts result, gets next, repeat
 
 Start:
-    .venv/bin/python3 -m src.automation.api_server
+    .venv/bin/python3 -m app.entrypoints.api.server
 """
 from __future__ import annotations
 
@@ -264,4 +264,4 @@ async def _startup():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.automation.api_server:app", host="127.0.0.1", port=8765, log_level="info")
+    uvicorn.run("app.entrypoints.api.server:app", host="127.0.0.1", port=8765, log_level="info")

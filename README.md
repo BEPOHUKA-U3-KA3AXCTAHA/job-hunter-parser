@@ -37,9 +37,17 @@ job-hunter-parser/
 │   │   └── automation/                   # Selenium-driven LinkedIn use-cases
 │   │
 │   ├── entrypoints/                      # who calls the system from outside
-│   │   └── cli/                          # Typer CLI (composition root)
-│   │       ├── main.py                   # `jhp <command>` (registered in pyproject)
-│   │       └── pipeline.py               # one-shot scrape→enrich→curate orchestration
+│   │   ├── cli/                          # Typer CLI (composition root)
+│   │   │   ├── main.py                   # `jhp <command>` (registered in pyproject)
+│   │   │   ├── migrate.py                # Alembic wrapper — upgrade/revision/...
+│   │   │   └── pipeline.py               # one-shot scrape→enrich→curate orchestration
+│   │   └── api/                          # local FastAPI server + its only client
+│   │       ├── server.py                 # `python -m app.entrypoints.api.server`
+│   │       └── firefox_extension/        # WebExtension that talks to server.py
+│   │           ├── manifest.json
+│   │           ├── content_script.js
+│   │           ├── background.js
+│   │           └── popup.{html,js}
 │   │
 │   ├── infra/                            # technical glue (no business logic)
 │   │   ├── config.py                     # Pydantic Settings + .env loader
@@ -108,7 +116,7 @@ provider-agnostic helpers) live flat under `adapters/`.
 | `companies` | Company, JobPosting | `ports/scraper.py` (CompanySource) | `adapters/orm.py`; `adapters/scraper/{linkedin,remoteok,rustjobs,web3career}.py` | email_extract, job_enrich |
 | `people` | DecisionMaker, DecisionMakerRole | `ports/search.py` (DecisionMakerSearch + ContactEnrichment) | `adapters/orm.py`; `adapters/search/{apollo,theorg,apify,email_guesser}.py` | — |
 | `applies` | Apply, ApplyStatus, ApplyChannel, ApplyFlank, ApplyMethod | `ports/repository.py` (ApplyRepository), `ports/llm.py` (LLMGenerator) | `adapters/orm.py`; `adapters/repository/sqla.py`; `adapters/llm/{anthropic,gemini,groq,base}.py` | score, curate |
-| `automation` | ApplyOutcome, ApplyResult | — (driving module — orchestrates use-cases across other modules) | `adapters/{selenium_bot,linkedin_easy_apply,linkedin_outreach,firefox_cookies,camoufox,api_server,llm_pool}.py` | selenium_orchestrator, send_orchestrator, easy_apply_orchestrator |
+| `automation` | ApplyOutcome, ApplyResult | — (driving module — orchestrates use-cases across other modules) | `adapters/{selenium_bot,linkedin_easy_apply,linkedin_outreach,firefox_cookies,camoufox,llm_pool}.py` | selenium_orchestrator, send_orchestrator, easy_apply_orchestrator |
 
 ### Dependency rules
 
