@@ -500,11 +500,22 @@ def extract_unfilled_questions(driver) -> list[dict]:
             return [el];
         }
 
+        // Only restrict to a dialog if there IS one on the page (LinkedIn
+        // Easy Apply, etc.). External ATS forms (Ashby, Greenhouse, Lever,
+        // standalone Workday) render the form on a full page with no
+        // role=dialog wrapper — gating on isInDialog() drops every field.
+        let dialogPresent = false;
+        for (const el of deepNodes(document)) {
+            if (el.getAttribute && el.getAttribute('role') === 'dialog') {
+                dialogPresent = true; break;
+            }
+        }
+
         const out = [];
         const seenRadioNames = new Set();
         const seenCheckboxes = new Set();
         for (const el of deepNodes(document)) {
-            if (!isInDialog(el)) continue;
+            if (dialogPresent && !isInDialog(el)) continue;
             const tag = el.tagName;
 
             if (tag === 'INPUT') {
@@ -512,6 +523,18 @@ def extract_unfilled_questions(driver) -> list[dict]:
                 if (['hidden', 'submit', 'button', 'file'].includes(t)) continue;
                 if (t === 'checkbox') {
                     if (seenCheckboxes.has(el)) continue;
+                    // Skip Ashby's hidden state-holder checkboxes that live
+                    // inside <div class="..._yesno...">, where the user-facing
+                    // controls are actual <button>Yes/No</button> elements.
+                    // The yesno extractor below handles those properly.
+                    let inYesNo = false;
+                    let walker = el.parentElement;
+                    for (let i = 0; i < 4 && walker && !inYesNo; i++) {
+                        const cls = walker.className || '';
+                        if (typeof cls === 'string' && /yesno/i.test(cls)) inYesNo = true;
+                        walker = walker.parentElement;
+                    }
+                    if (inYesNo) { seenCheckboxes.add(el); continue; }
                     const grp = checkboxGroup(el);
                     if (grp.length >= 2) {
                         // single-choice checkbox group → treat like radio.
@@ -629,6 +652,56 @@ def extract_unfilled_questions(driver) -> list[dict]:
                 });
             }
         }
+
+        // --- Second pass: button-style Yes/No toggle groups (Ashby) ---
+        // <div class="..._yesno..."><button>Yes</button><button>No</button>
+        //   <input type="checkbox" hidden></div>
+        // Re-finding by cssPath is fragile (Ashby reflows after each click)
+        // and label-text matching can mismatch when labels share words.
+        // Store the document-order INDEX of the yesno container — fill_answers
+        // re-walks containers fresh and clicks the Nth one.
+        const seenYesNo = new Set();
+        let yesnoIdx = 0;
+        for (const el of deepNodes(document)) {
+            if (dialogPresent && !isInDialog(el)) continue;
+            if (el.tagName !== 'DIV') continue;
+            const cls = el.className || '';
+            if (typeof cls !== 'string' || !/yesno/i.test(cls)) continue;
+            if (seenYesNo.has(el)) continue;
+            seenYesNo.add(el);
+            const btns = Array.from(el.querySelectorAll('button')).filter(b => {
+                const t = (b.textContent || '').trim();
+                return /^(yes|no)$/i.test(t);
+            });
+            if (btns.length < 2) continue;
+            const already = btns.some(b => /selected|active|checked|_chosen/i.test(b.className || ''));
+            const myIdx = yesnoIdx++;
+            if (already) continue;
+            // Find the question label — only inside the immediate field-entry
+            // wrapper (don't walk past it to avoid grabbing a sibling field's
+            // label). Fall back to '' if no wrapper found.
+            let groupLabel = '';
+            let p = el.parentElement, fieldEntry = null;
+            for (let i = 0; i < 4 && p && !fieldEntry; i++) {
+                const c = p.className || '';
+                if (typeof c === 'string' && /fieldEntry|field-entry/i.test(c)) fieldEntry = p;
+                p = p.parentElement;
+            }
+            if (fieldEntry) {
+                const lbl = fieldEntry.querySelector('label');
+                if (lbl) groupLabel = (lbl.textContent || '').trim();
+            }
+            const options = btns.map(b => (b.textContent || '').trim());
+            out.push({
+                label: groupLabel || 'yes/no question',
+                type: 'radio',
+                options,
+                name: '', placeholder: '', required: true,
+                _selector: cssPath(btns[0]),
+                _button_group: true,
+                _yesno_idx: myIdx,
+            });
+        }
         return out;
     """
     try:
@@ -656,8 +729,15 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
             return null;
         }
         function setValue(el, val) {
-            const proto = Object.getPrototypeOf(el);
-            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            // React's onChange listener subscribes via the canonical prototype
+            // setter — bypassing it (instance.value=...) doesn't trigger
+            // re-render. Look up the setter on HTMLInputElement.prototype /
+            // HTMLTextAreaElement.prototype directly, not the element's own
+            // prototype (which React may have monkey-patched).
+            const ctor = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement
+                       : el.tagName === 'SELECT' ? window.HTMLSelectElement
+                       : window.HTMLInputElement;
+            const desc = ctor && Object.getOwnPropertyDescriptor(ctor.prototype, 'value');
             if (desc && desc.set) desc.set.call(el, val);
             else el.value = val;
             el.dispatchEvent(new Event('input', {bubbles: true}));
@@ -685,6 +765,20 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
                 } else if (tag === 'TEXTAREA' || (tag === 'INPUT' && !['checkbox', 'radio'].includes((el.type || '').toLowerCase()))) {
                     el.focus();
                     setValue(el, answer);
+                    // Some React forms (Ashby) reset the controlled state on
+                    // setValue alone — drive a real text-insertion event so
+                    // the framework sees keyboard-like input.
+                    if ((el.value || '') !== answer) {
+                        try {
+                            el.value = '';
+                            el.focus();
+                            document.execCommand('insertText', false, answer);
+                        } catch (e) {}
+                    }
+                    if ((el.value || '') !== answer) {
+                        // Last resort: re-apply setValue + bubble events.
+                        setValue(el, answer);
+                    }
                     filled++;
                 } else if (tag === 'INPUT' && el.type === 'checkbox') {
                     // Group case: question.options has multiple labels, answer = one of them
@@ -731,6 +825,12 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
                             break;
                         }
                     }
+                } else if (tag === 'BUTTON' && question._button_group) {
+                    // Ashby-style yes/no buttons ignore JS-dispatched clicks
+                    // (isTrusted=false). Skip here — the Python-side fallback
+                    // below clicks them via real Selenium events with a
+                    // settle pause between each so Ashby's reflow doesn't
+                    // strand stale element references.
                 }
             } catch (e) { console.warn('[JHP] fill failed', e); }
         }
@@ -743,6 +843,91 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
     except Exception as e:
         logger.warning("fill_answers failed: {}", e)
         return 0
+
+    # Python-side fallback — some React forms (Ashby) reject pure JS for
+    # both textareas (setValue/execCommand) and button-style toggles
+    # (.click() with isTrusted=false). Re-do these via real Selenium calls
+    # so the framework sees genuine keyboard/pointer events.
+    from selenium.webdriver.common.by import By
+
+    # 1) Textareas: send_keys.
+    for q, a in qa_pairs:
+        if not a or q.get("type") != "textarea":
+            continue
+        sel = q.get("_selector") or ""
+        if not sel:
+            continue
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            cur = (el.get_attribute("value") or "").strip()
+            if cur == a.strip():
+                continue  # JS path worked
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            el.click()
+            try:
+                el.clear()
+            except Exception:
+                pass
+            el.send_keys(a)
+        except Exception as e:
+            logger.debug("textarea send_keys fallback failed for {}: {}", sel[:50], e)
+
+    # 2) Button-style yes/no toggles: re-walk via JS to find the right
+    #    container by index, then click via Selenium so the button receives
+    #    a trusted event (Ashby state listeners ignore JS-dispatched clicks).
+    yesno_qs = [(q, a) for q, a in qa_pairs if a and q.get("_button_group")]
+    if yesno_qs:
+        # Sort by index — click in document order so re-renders don't confuse
+        # subsequent index lookups.
+        yesno_qs.sort(key=lambda p: p[0].get("_yesno_idx", 0))
+        for q, a in yesno_qs:
+            idx = q.get("_yesno_idx", -1)
+            want = (a or "").strip().lower()
+            want = "Yes" if want.startswith("y") else ("No" if want.startswith("n") else a)
+            clicked = False
+            for attempt in range(2):  # one retry on stale-element after reflow
+                try:
+                    btn = driver.execute_script(
+                        """
+                        function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                            if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                            const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                        const targetIdx = arguments[0], wantText = arguments[1];
+                        let i = 0;
+                        for (const d of dn(document)) {
+                            if (d.tagName !== 'DIV') continue;
+                            const c = d.className || '';
+                            if (typeof c !== 'string' || !/yesno/i.test(c)) continue;
+                            if (i === targetIdx) {
+                                for (const b of d.querySelectorAll('button')) {
+                                    if ((b.textContent||'').trim().toLowerCase() === wantText.toLowerCase())
+                                        return b;
+                                }
+                                return null;
+                            }
+                            i++;
+                        }
+                        return null;
+                        """,
+                        idx, want,
+                    )
+                    if not btn:
+                        logger.debug("yesno container/button missing for idx={}", idx)
+                        break
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+                    btn.click()
+                    clicked = True
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        logger.debug("yesno click stale (idx={}), retrying after settle: {}", idx, e)
+                        time.sleep(0.4)
+                    else:
+                        logger.warning("yesno click failed (idx={}): {}", idx, e)
+            if clicked:
+                # Pause so Ashby finishes the state update + re-render before
+                # we move on to the next yesno toggle.
+                time.sleep(0.5)
 
     # Some text inputs are autocomplete fields (LinkedIn city / location):
     # typing alone isn't enough — a <ul> dropdown with role="option" appears

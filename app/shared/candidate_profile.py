@@ -35,21 +35,24 @@ def _load_user_info() -> str:
     This is the SOURCE OF TRUTH for everything the LLM puts in form fields
     (LinkedIn URL, Telegram, location/visa, etc.) — overrides the CV PDF
     which may carry stale data. Empty string if no users yet.
+
+    Uses a raw sqlite read so the call is safe from any context (sync,
+    async, asyncio.run()-nested) — the async repo path used to bail to ""
+    whenever a loop was already running, leaving the LLM blind.
     """
     try:
-        # Lazy + sync — CandidateProfile is constructed in non-async paths
-        import asyncio
-        from app.modules.users import default_user_repo
-        repo = default_user_repo()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop and loop.is_running():
-            # In async context — caller should pre-load via async; bail
+        import sqlite3
+        db = Path(__file__).resolve().parents[2] / "jhp.db"
+        if not db.exists():
             return ""
-        user = asyncio.run(repo.get_default())
-        return (user.info or "").strip() if user else ""
+        con = sqlite3.connect(str(db))
+        try:
+            row = con.execute(
+                "SELECT info FROM users ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            return (row[0] or "").strip() if row else ""
+        finally:
+            con.close()
     except Exception:
         return ""
 

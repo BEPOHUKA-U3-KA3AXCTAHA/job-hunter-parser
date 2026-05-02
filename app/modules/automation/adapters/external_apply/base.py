@@ -299,3 +299,54 @@ def click_button_by_text(driver, regex: str, timeout: float = 4.0) -> bool:
 def normalize_phone(raw: str) -> str:
     """Some ATS don't like '+' prefix; also strip spaces / dashes."""
     return re.sub(r"[^\d+]", "", raw or "")
+
+
+def detect_form_errors(driver) -> list[str]:
+    """After clicking submit, check for client-side validation errors.
+
+    Returns a list of error strings — empty list means submit looks OK. We
+    look for visible error banners, "required field missing" markers, and
+    Ashby/Greenhouse-style red error blocks.
+    """
+    js = """
+        function* deepNodes(root) {
+            if (!root) return;
+            const stack = [root];
+            while (stack.length) {
+                const n = stack.pop();
+                if (!n) continue;
+                if (n.nodeType === 1) yield n;
+                if (n.shadowRoot) stack.push(n.shadowRoot);
+                const k = n.children || n.childNodes || [];
+                for (let i = k.length - 1; i >= 0; i--) stack.push(k[i]);
+            }
+        }
+        const errors = [];
+        const reError = /missing entry|required|please (enter|select|fill|complete)|invalid|errors? on the form|needs corrections/i;
+        for (const el of deepNodes(document)) {
+            if (!el.getBoundingClientRect) continue;
+            const role = el.getAttribute && el.getAttribute('role');
+            const aria = el.getAttribute && el.getAttribute('aria-invalid');
+            const cls = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || '';
+            const looksError = role === 'alert' || aria === 'true' ||
+                /\\b(error|invalid|required-warning|form-error|errorBanner)\\b/i.test(typeof cls === 'string' ? cls : '');
+            if (!looksError) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) continue;
+            const t = (el.textContent || '').trim();
+            if (t && reError.test(t)) errors.push(t.slice(0, 200));
+        }
+        return errors;
+    """
+    try:
+        out = driver.execute_script(js) or []
+        # Dedupe while preserving order
+        seen, unique = set(), []
+        for e in out:
+            key = e.lower()[:80]
+            if key not in seen:
+                seen.add(key); unique.append(e)
+        return unique
+    except Exception as e:
+        logger.debug("detect_form_errors failed: {}", e)
+        return []
