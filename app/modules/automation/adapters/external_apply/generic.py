@@ -30,6 +30,19 @@ class GenericHandler:
         time.sleep(2.5)
         host = urlparse(driver.current_url).netloc
 
+        # ATS landing pages often show only a job description + an "Apply now"
+        # button that takes you to the actual form. Click it if present.
+        for pat in [r"^apply now$", r"^apply for this job$", r"^apply$"]:
+            if click_button_by_text(driver, pat, timeout=2):
+                logger.info("generic[{}]: clicked landing-page Apply", host)
+                time.sleep(2.5)
+                # The new tab may have switched again — refresh handle if so
+                handles = driver.window_handles
+                if len(handles) > 1:
+                    driver.switch_to.window(handles[-1])
+                    time.sleep(1.5)
+                break
+
         filled = 0
 
         # Heuristic name/email/phone fill — matches by input name/id substring
