@@ -848,6 +848,7 @@ async def _autofill_via_llm(driver, page_idx: int, job_tag: str) -> int:
 
 def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResult:
     import asyncio
+    last_was_review = False
     for page_idx in range(MAX_MODAL_PAGES):
         human_sleep(0.6, 1.4)
         if is_blocked_page(driver):
@@ -880,13 +881,30 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
             human_sleep(2.5, 4)
             return ApplyResult(ApplyOutcome.APPLIED, pages=page_idx + 1)
 
-        # Review?
+        # Review? — clicking moves to summary page; Submit should appear next iteration.
+        # If Review was already clicked on the previous iteration, treat the modal as
+        # stuck and bail rather than spamming clicks.
         review = find_button_by_text(driver, r"^review( your application)?$", timeout=1)
         if review:
-            logger.debug("Review at page {}", page_idx + 1)
+            if last_was_review:
+                logger.warning(
+                    "Review button still visible after previous click at page {} — modal stuck, bailing",
+                    page_idx + 1,
+                )
+                _diag_save(driver, f"{job_tag}_review_loop_p{page_idx}")
+                _close_modal(driver)
+                return ApplyResult(
+                    ApplyOutcome.FAILED,
+                    detail=f"Review loop at page {page_idx + 1} — Submit never appeared",
+                    pages=page_idx + 1,
+                )
+            logger.info("Review at page {}", page_idx + 1)
+            _diag_save(driver, f"{job_tag}_review_p{page_idx}")
             robust_click(driver, review, "review")
-            human_sleep(1, 2)
+            human_sleep(2, 3)
+            last_was_review = True
             continue
+        last_was_review = False
 
         # Continue / Next?
         cont = find_button_by_text(driver, r"^(?:continue( to next step)?|next)$", timeout=1)
