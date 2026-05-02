@@ -121,6 +121,6 @@ class CandidateProfile:
         "roles need no sponsorship."
     )
 
-    # Salary preferences (CV doesn't mention).
-    salary_floor_eur: int = 70_000
-    salary_floor_usd: int = 80_000
+    # Salary preferences — fallback when users.info doesn't spell them out.
+    salary_floor_eur: int = 55_000
+    salary_floor_usd: int = 60_000
