@@ -18,6 +18,7 @@ from typing import Literal
 from loguru import logger
 
 from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
+from app.modules.applies.services.qa_cache import get_cached, save_to_cache
 from app.shared import CandidateProfile
 
 QuestionType = Literal["text", "number", "tel", "email", "textarea", "select", "radio", "checkbox"]
@@ -127,12 +128,43 @@ async def answer_questions(
         return []
 
     profile = profile or CandidateProfile()
+
+    # 1. Cache lookup — every question, in order. Hits replace the LLM round-trip.
+    cached_answers: list[FormAnswer | None] = []
+    for q in questions:
+        hit = await get_cached(q.label)
+        if hit:
+            ans_text, source, conf = hit
+            # If LLM-cached but the question has a closed option list and the
+            # cached answer no longer matches the current options — invalidate
+            # (form options can change between job postings).
+            if q.options and ans_text not in q.options:
+                cached_answers.append(None)
+                continue
+            cached_answers.append(FormAnswer(
+                answer=ans_text, confidence=conf,
+                reasoning=f"cached ({source})",
+            ))
+            logger.info(
+                "Q (cache-{}): {!r} → {!r} (conf={:.2f})",
+                source, q.label[:50], ans_text[:60], conf,
+            )
+        else:
+            cached_answers.append(None)
+
+    # 2. If every question is cached, skip LLM entirely
+    pending_idx = [i for i, a in enumerate(cached_answers) if a is None]
+    if not pending_idx:
+        return [a for a in cached_answers if a is not None]
+
+    # 3. LLM only for the uncached questions
+    pending_qs = [questions[i] for i in pending_idx]
     system = (
         "You are filling out a job application form on behalf of the candidate. "
         "Reply ONLY with a JSON array, one object per question, in the same order. "
         "No prose, no markdown fences."
     )
-    user_prompt = _build_prompt(questions, job_title, job_description, company_name, profile)
+    user_prompt = _build_prompt(pending_qs, job_title, job_description, company_name, profile)
 
     pool = ClaudeCLIPool(workers=1, model=model, timeout_s=120)
     results = await pool.batch_generate([(system, user_prompt)])
@@ -155,17 +187,21 @@ async def answer_questions(
         logger.error("Claude returned non-JSON for form answers: {} | body={!r}", e, body[:300])
         return []
 
-    if not isinstance(raw, list) or len(raw) != len(questions):
+    if not isinstance(raw, list) or len(raw) != len(pending_qs):
         logger.warning(
-            "Claude returned {} answers for {} questions — shape mismatch",
-            len(raw) if isinstance(raw, list) else "non-list", len(questions),
+            "Claude returned {} answers for {} pending questions — shape mismatch",
+            len(raw) if isinstance(raw, list) else "non-list", len(pending_qs),
         )
-        return []
+        return [a or FormAnswer(answer="", confidence=0.0, reasoning="LLM mismatch")
+                for a in cached_answers]
 
-    answers: list[FormAnswer] = []
-    for i, item in enumerate(raw):
+    # 4. Merge LLM answers back into the original order
+    final_answers = list(cached_answers)
+    for k, item in enumerate(raw):
+        idx = pending_idx[k]
+        q = questions[idx]
         if not isinstance(item, dict):
-            answers.append(FormAnswer(answer="", confidence=0.0, reasoning="bad shape"))
+            final_answers[idx] = FormAnswer(answer="", confidence=0.0, reasoning="bad shape")
             continue
         ans = FormAnswer(
             answer=str(item.get("answer", "")),
@@ -173,16 +209,24 @@ async def answer_questions(
             reasoning=str(item.get("reasoning", ""))[:200],
         )
         # For select/radio: enforce option match
-        if questions[i].options and ans.answer not in questions[i].options:
+        if q.options and ans.answer not in q.options:
             logger.warning(
                 "Q{} answer {!r} not in options {} — clearing",
-                i + 1, ans.answer, questions[i].options,
+                idx + 1, ans.answer, q.options,
             )
             ans = FormAnswer(answer="", confidence=0.0, reasoning="not in options")
         logger.info(
-            "Q{} ({}): {!r} (conf={:.2f}) — {}",
-            i + 1, questions[i].type, ans.answer[:60], ans.confidence, ans.reasoning[:100],
+            "Q{} ({}, llm): {!r} (conf={:.2f}) — {}",
+            idx + 1, q.type, ans.answer[:60], ans.confidence, ans.reasoning[:100],
         )
-        answers.append(ans)
+        final_answers[idx] = ans
 
-    return answers
+        # Persist confident LLM answers — user can review/correct via `jhp qa review`
+        if ans.answer and ans.confidence >= 0.6:
+            await save_to_cache(
+                q.label, ans.answer, q.options or None,
+                source="llm", confidence=ans.confidence,
+                company=company_name, job_title=job_title,
+            )
+
+    return [a or FormAnswer(answer="", confidence=0.0) for a in final_answers]
