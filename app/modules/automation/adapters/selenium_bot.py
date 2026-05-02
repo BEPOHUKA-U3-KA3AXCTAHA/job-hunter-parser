@@ -560,8 +560,28 @@ def extract_unfilled_questions(driver) -> list[dict]:
                         const lbl = findLabel(r);
                         return lbl || r.value || '';
                     });
+                    // Radio question label: walk up to find the wrapping
+                    // [role=group][aria-labelledby] or <fieldset><legend>.
+                    // The per-radio findLabel only returns "Yes"/"No".
+                    let groupLabel = '';
+                    const root = el.getRootNode ? el.getRootNode() : document;
+                    let p = el.parentElement;
+                    for (let i = 0; i < 6 && p && !groupLabel; i++) {
+                        const lbId = p.getAttribute && p.getAttribute('aria-labelledby');
+                        if (lbId && root.getElementById) {
+                            const n = root.getElementById(lbId);
+                            if (n) groupLabel = (n.textContent || '').trim();
+                        }
+                        if (!groupLabel && p.tagName === 'FIELDSET') {
+                            const lg = p.querySelector && p.querySelector('legend');
+                            if (lg) groupLabel = (lg.textContent || '').trim();
+                        }
+                        p = p.parentElement;
+                    }
                     out.push({
-                        label: findLabel(grp[0]).replace(/\\s+\\S+\\s*$/, '').trim() || el.name,
+                        label: groupLabel
+                            || findLabel(grp[0]).replace(/\\s+\\S+\\s*$/, '').trim()
+                            || el.name,
                         type: 'radio', options,
                         name: el.name || '', placeholder: '', required: grp.some(r => isRequired(r)),
                         _selector: cssPath(el),
@@ -571,6 +591,13 @@ def extract_unfilled_questions(driver) -> list[dict]:
                 // text/number/tel/email — surface optional fields too; the LLM
                 // decides whether to fill via confidence threshold.
                 if (el.value && el.value.trim()) continue;
+                // Skip ARIA combobox / search-as-you-type widgets (e.g. react-select
+                // country code, location autocomplete). They need a typeahead +
+                // dropdown-click flow which the generic LLM-fill cannot drive,
+                // and they pollute the question pool with unanswerable labels.
+                if (el.getAttribute('role') === 'combobox' ||
+                    el.getAttribute('aria-autocomplete') === 'list' ||
+                    el.getAttribute('aria-haspopup') === 'listbox') continue;
                 out.push({
                     label: findLabel(el), type: t || 'text', options: [],
                     name: el.name || el.id || '', placeholder: el.placeholder || '',
@@ -578,6 +605,12 @@ def extract_unfilled_questions(driver) -> list[dict]:
                 });
             } else if (tag === 'TEXTAREA') {
                 if (el.value && el.value.trim()) continue;
+                // Skip captcha response textareas — they are populated by the
+                // captcha widget itself, not by the user.
+                const nm = (el.name || '') + ' ' + (el.id || '');
+                if (/recaptcha|hcaptcha|h-captcha|g-recaptcha|cf-turnstile/i.test(nm)) continue;
+                // Skip non-displayed textareas (captchas often set display:none).
+                if (el.offsetParent === null && el.style.display === 'none') continue;
                 out.push({
                     label: findLabel(el), type: 'textarea', options: [],
                     name: el.name || el.id || '', placeholder: el.placeholder || '',

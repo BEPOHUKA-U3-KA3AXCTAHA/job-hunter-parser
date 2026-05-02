@@ -47,14 +47,22 @@ class GenericHandler:
 
         filled = 0
 
-        # Heuristic name/email/phone fill — matches by input name/id substring
+        # Heuristic name/email/phone/location fill — matches by input
+        # name/id/placeholder substring. Order matters: we want city/location
+        # filled from profile BEFORE the LLM step picks it up as a "custom
+        # field" and stuffs an unrelated answer (e.g. visa "No") into it.
         for substr, value in [
             ("first", ctx.profile_first_name),
             ("last", ctx.profile_last_name),
             ("email", ctx.profile_email),
             ("phone", ctx.profile_phone),
             ("linkedin", ctx.profile_linkedin),
+            ("city", ctx.profile_location),
+            ("location", ctx.profile_location),
+            ("address", ctx.profile_location),
         ]:
+            if not value:
+                continue
             for sel in [
                 f"input[name*='{substr}' i]",
                 f"input[id*='{substr}' i]",
@@ -103,11 +111,12 @@ class GenericHandler:
                 filled += fill_answers(driver, qa_pairs)
 
         time.sleep(1)
-        # Submit — try clicking by visible text
-        submitted = (
-            click_button_by_text(driver, r"^submit application$", timeout=2)
-            or click_button_by_text(driver, r"^submit$", timeout=1)
-            or click_button_by_text(driver, r"^apply$", timeout=1)
+        # Submit — match common submit button labels across ATSes:
+        # 'Submit application', 'Submit', 'Send message' (YC), 'Send', 'Apply'.
+        submitted = click_button_by_text(
+            driver,
+            r"^\s*(submit application|submit|send message|send|apply)\s*$",
+            timeout=3,
         )
         if not submitted:
             return AtsResult(
