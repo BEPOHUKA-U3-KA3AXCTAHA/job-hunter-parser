@@ -930,7 +930,6 @@ def _try_external_apply(driver, ext_btn, company_name: str, job_title: str, job_
     """Click the external Apply button, switch to the new tab, dispatch to the
     matching ATS handler. Returns ApplyResult on success/failure, or None if
     the click didn't open a new tab (caller falls back to other paths)."""
-    from app.modules.applies import default_user_repo
     from app.modules.automation.adapters.external_apply import (
         AtsContext, channel_for_handler, pick_handler,
     )
