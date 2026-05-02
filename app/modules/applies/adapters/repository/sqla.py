@@ -13,16 +13,16 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from app.infra.db import get_session_maker
-from app.modules.applies.adapters.orm import ApplyRow
+from app.infra.db.orm.applies import ApplyRow
 from app.modules.applies.models import (
     Apply as Message,  # legacy alias used in this file
     ApplyChannel as MessageChannel,
     ApplyStatus as MessageStatus,
 )
 from app.modules.applies.ports import ApplyRepository
-from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow
+from app.infra.db.orm.companies import CompanyRow, JobPostingRow
 from app.modules.companies.models import Company
-from app.modules.people.adapters.orm import DecisionMakerRow
+from app.infra.db.orm.people import DecisionMakerRow
 from app.modules.people.models import DecisionMaker, DecisionMakerRole
 from app.shared import TechStack
 

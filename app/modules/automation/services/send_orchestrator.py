@@ -34,9 +34,9 @@ from app.modules.automation.adapters.linkedin_outreach import (
     send_outreach,
 )
 from app.infra.db import get_session_maker
-from app.modules.applies.adapters.orm import ApplyRow
-from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow
-from app.modules.people.adapters.orm import DecisionMakerRow
+from app.infra.db.orm.applies import ApplyRow
+from app.infra.db.orm.companies import CompanyRow, JobPostingRow
+from app.infra.db.orm.people import DecisionMakerRow
 
 MAX_SENT_PER_DAY = 30
 MAX_SEND_PER_BATCH = 5

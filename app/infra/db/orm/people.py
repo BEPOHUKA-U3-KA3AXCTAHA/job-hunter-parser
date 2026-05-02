@@ -1,8 +1,4 @@
-"""SQLAlchemy ORM tables owned by the people module.
-
-Cross-module relationships use string class names so this module doesn't
-have to import from neighbours' adapters/.
-"""
+"""SQLAlchemy ORM table for the people domain (DecisionMakerRow)."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -11,11 +7,11 @@ from uuid import UUID, uuid4
 from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.infra.db import Base
+from app.infra.db.engine import Base
 
 if TYPE_CHECKING:
-    from app.modules.applies.adapters.orm import ApplyRow  # noqa: F401
-    from app.modules.companies.adapters.orm import CompanyRow  # noqa: F401
+    from app.infra.db.orm.applies import ApplyRow
+    from app.infra.db.orm.companies import CompanyRow
 
 
 class DecisionMakerRow(Base):
@@ -34,5 +30,5 @@ class DecisionMakerRow(Base):
     # All contact channels in one JSON field. Easily extensible without schema migrations.
     contacts: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    company: Mapped["CompanyRow"] = relationship("CompanyRow", back_populates="decision_makers")
-    applies: Mapped[list["ApplyRow"]] = relationship("ApplyRow", back_populates="decision_maker")
+    company: Mapped["CompanyRow"] = relationship(back_populates="decision_makers")
+    applies: Mapped[list["ApplyRow"]] = relationship(back_populates="decision_maker")

@@ -39,7 +39,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from app.infra.db import get_session_maker, init_db
-from app.modules.applies.adapters.orm import ApplyRow
+from app.infra.db.orm.applies import ApplyRow
 
 
 @dataclass
@@ -184,8 +184,8 @@ async def _persist_apply(cand: JobCandidate, result: ApplyResult):
     Session = get_session_maker()
     from sqlalchemy import and_, select
 
-    from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow
-    from app.modules.people.adapters.orm import DecisionMakerRow
+    from app.infra.db.orm.companies import CompanyRow, JobPostingRow
+    from app.infra.db.orm.people import DecisionMakerRow
 
     async with Session() as session:
         # Company

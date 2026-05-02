@@ -8,10 +8,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.infra.db import Base
+from app.infra.db.engine import Base
 
 if TYPE_CHECKING:
-    from app.modules.people.adapters.orm import DecisionMakerRow  # noqa: F401
+    from app.infra.db.orm.people import DecisionMakerRow
 
 
 class ApplyRow(Base):
@@ -62,6 +62,4 @@ class ApplyRow(Base):
     sent_at: Mapped[datetime | None]
     response_at: Mapped[datetime | None]
 
-    decision_maker: Mapped["DecisionMakerRow"] = relationship(
-        "DecisionMakerRow", back_populates="applies"
-    )
+    decision_maker: Mapped["DecisionMakerRow"] = relationship(back_populates="applies")

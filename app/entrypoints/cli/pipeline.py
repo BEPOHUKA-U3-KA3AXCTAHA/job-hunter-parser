@@ -196,7 +196,7 @@ async def run_pipeline(
                     await session.commit()
 
             # Persist job postings, linked back to companies by name
-            from app.modules.companies.adapters.orm import CompanyRow
+            from app.infra.db.orm.companies import CompanyRow
             from sqlalchemy import select
             async with Session() as session:
                 names = {c.name for c in companies}

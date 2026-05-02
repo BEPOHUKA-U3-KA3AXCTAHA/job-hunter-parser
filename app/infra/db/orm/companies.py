@@ -1,9 +1,9 @@
-"""SQLAlchemy ORM tables owned by the companies module.
+"""SQLAlchemy ORM tables for the companies domain (CompanyRow, JobPostingRow).
 
-Cross-module relationships use string class names (`relationship("X")`) so
-that this module doesn't have to import from neighbours' adapters/. The
-mapper resolves names at config time once all module ORM files have been
-imported (handled by the CLI/alembic bootstrap).
+Lives in infra/db/orm/ (not in modules/companies/adapters/) because the schema
+is shared infrastructure: foreign keys cross modules and the Alembic
+autogenerate diff has to see one coherent metadata. Modules' repository
+adapters import these classes from here.
 """
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.infra.db import Base
+from app.infra.db.engine import Base
 
 if TYPE_CHECKING:
-    from app.modules.people.adapters.orm import DecisionMakerRow  # noqa: F401
+    from app.infra.db.orm.people import DecisionMakerRow
 
 
 class CompanyRow(Base):
@@ -38,7 +38,6 @@ class CompanyRow(Base):
     last_dm_scan_at: Mapped[datetime | None]
 
     decision_makers: Mapped[list["DecisionMakerRow"]] = relationship(
-        "DecisionMakerRow",
         back_populates="company",
         cascade="all, delete-orphan",
     )
@@ -72,8 +71,6 @@ class JobPostingRow(Base):
     last_seen_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active: Mapped[bool] = mapped_column(default=True)
 
-    # Competition signals from the source page (best effort, may be NULL)
     applicants_count: Mapped[int | None]
     posted_at: Mapped[datetime | None]
-    # Real apply-to email when the source exposed one (careers@/jobs@/hr@/...)
     apply_email: Mapped[str | None] = mapped_column(String(200))

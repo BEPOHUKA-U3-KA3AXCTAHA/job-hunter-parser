@@ -335,9 +335,9 @@ def stats() -> None:
     """Show DB statistics."""
     from sqlalchemy import func, select
     from app.infra.db import get_session_maker
-    from app.modules.applies.adapters.orm import ApplyRow
-    from app.modules.companies.adapters.orm import CompanyRow
-    from app.modules.people.adapters.orm import DecisionMakerRow
+    from app.infra.db.orm.applies import ApplyRow
+    from app.infra.db.orm.companies import CompanyRow
+    from app.infra.db.orm.people import DecisionMakerRow
     from app.infra.db import init_db
 
     async def _run():
@@ -397,7 +397,7 @@ def companies(
     """List all companies in DB."""
     from sqlalchemy import select
     from app.infra.db import get_session_maker
-    from app.modules.companies.adapters.orm import CompanyRow
+    from app.infra.db.orm.companies import CompanyRow
     from app.infra.db import init_db
 
     async def _run():
@@ -449,8 +449,8 @@ def contacts(
     from datetime import datetime, timedelta
     from sqlalchemy import select
     from app.infra.db import get_session_maker
-    from app.modules.companies.adapters.orm import CompanyRow
-    from app.modules.people.adapters.orm import DecisionMakerRow
+    from app.infra.db.orm.companies import CompanyRow
+    from app.infra.db.orm.people import DecisionMakerRow
     from app.infra.db import init_db
 
     async def _run():
@@ -520,7 +520,7 @@ def jobs_list(
     from datetime import datetime, timedelta
     from sqlalchemy import or_, select
     from app.infra.db import get_session_maker
-    from app.modules.companies.adapters.orm import CompanyRow, JobPostingRow
+    from app.infra.db.orm.companies import CompanyRow, JobPostingRow
     from app.infra.db import init_db
 
     async def _run():
@@ -600,7 +600,7 @@ def stale(
     from datetime import datetime, timedelta
     from sqlalchemy import or_, select
     from app.infra.db import get_session_maker
-    from app.modules.companies.adapters.orm import CompanyRow
+    from app.infra.db.orm.companies import CompanyRow
     from app.infra.db import init_db
 
     async def _run():
@@ -647,7 +647,7 @@ def retry(
     """
     from sqlalchemy import select
     from app.infra.db import get_session_maker
-    from app.modules.applies.adapters.orm import ApplyRow
+    from app.infra.db.orm.applies import ApplyRow
     from app.infra.db import init_db
     from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
 
