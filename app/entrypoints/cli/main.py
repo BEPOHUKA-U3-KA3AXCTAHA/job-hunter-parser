@@ -691,22 +691,23 @@ def curate(
     most contacts). Letters land in messages keyed by (job_posting_id, dm_id, attempt_no=1).
     """
     from app.infra.config import get_secrets
-    from app.modules.applies.services.curate import filter_and_score, load_candidates_from_db
-    from app.infra.db import get_session_maker
-    from app.infra.db import init_db
-    from app.modules.applies.models import Message, MessageChannel, MessageStatus
+    from app.infra.db import get_session_maker, init_db
+    from app.modules.applies.adapters.repository.candidates import SqlaCandidateBundleRepository
     from app.modules.applies.adapters.repository.sqla import _upsert_message
+    from app.modules.applies.models import Message, MessageChannel, MessageStatus
+    from app.modules.applies.services.curate import filter_and_score
     from app.shared import CandidateProfile
 
     async def _run():
         await init_db()
         profile = CandidateProfile()
 
-        (bundle,) = await load_candidates_from_db()
-        console.print(f"Loaded [cyan]{len(bundle)}[/] (job, company, dms) bundles from DB")
+        candidates_repo = SqlaCandidateBundleRepository()
+        bundles = await candidates_repo.load_active_bundles()
+        console.print(f"Loaded [cyan]{len(bundles)}[/] (job, company, dms) bundles from DB")
 
         pairs = filter_and_score(
-            bundle, profile,
+            bundles, profile,
             max_age_days=max_age_days,
             min_score=min_score,
             dms_per_job=dms_per_job,
