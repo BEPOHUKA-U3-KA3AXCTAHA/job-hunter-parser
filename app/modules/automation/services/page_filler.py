@@ -23,7 +23,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 
-def snapshot_form_html(driver, max_chars: int = 60000) -> str:
+def snapshot_form_html(driver, max_chars: int = 120000) -> str:
     """Capture cleaned form HTML for the LLM. Strips scripts/styles, big
     base64 data, and elements with no fillable controls. Trims to fit the
     LLM context budget."""
@@ -66,8 +66,13 @@ async def ask_claude_for_fill_plan(
     system = (
         "You are a job-application form-filling assistant. Given the rendered HTML of a "
         "form and the candidate's profile, return a JSON array of actions that — when "
-        "executed in order — will fill EVERY required (aria-required=true or marked '*') "
-        "field correctly. Do NOT include actions for already-filled fields."
+        "executed in order — will fill EVERY field needed to make the Apply button "
+        "enable, INCLUDING ostensibly-voluntary EEO/demographic dropdowns (gender, "
+        "race/ethnicity, veteran status, disability status). Many ATSes mark these "
+        "'voluntary' in copy but disable submit until at least 'Decline to answer' is "
+        "picked — pick a 'Decline to specify' / 'I don't wish to answer' / 'Prefer not "
+        "to say' option for personal demographics. Do NOT include actions for "
+        "already-filled fields."
     )
     user = f"""Return ONLY a JSON array, no prose. Each item:
 {{
@@ -94,7 +99,13 @@ Rules:
   "Montenegro"), THEN a fill for the phone digits (without the +XXX prefix).
 - Yes/No questions about US visa/sponsorship: NO to "authorized to work in US",
   YES to "require sponsorship".
-- Skip optional fields (no asterisk, no aria-required) unless very simple.
+- EEO / demographic dropdowns (gender, race, ethnicity, veteran, disability):
+  ALWAYS pick a "Decline to specify" / "Prefer not to answer" / "I don't wish to
+  answer" option if available. If the only options are concrete categories, pick
+  the most accurate (Sergey is male, Russian, no military service, no disability).
+- For ANY combobox you can see in the HTML, infer the likely option set and emit
+  select_combobox even if you can't see the option list inline — the executor
+  will type your value to filter and click the matching option.
 {error_block}
 
 CANDIDATE PROFILE:
@@ -154,11 +165,49 @@ def execute_actions(driver, actions: list[dict]) -> int:
                 el.send_keys(value)
                 done += 1
             elif action == "click":
+                clicked = False
                 try:
                     ActionChains(driver).move_to_element(el).pause(0.05).click().perform()
+                    clicked = True
                 except Exception:
-                    el.click()
-                done += 1
+                    try:
+                        el.click()
+                        clicked = True
+                    except Exception:
+                        pass
+                if not clicked and el.tag_name.lower() == "input":
+                    # Hidden radio/checkbox (Rippling, Headless UI) — the
+                    # visible target is the associated label, an ancestor
+                    # [role=radio] / [role=button], or a sibling div with the
+                    # state class. Try those in order.
+                    fallback = driver.execute_script(
+                        """
+                        const el = arguments[0];
+                        const root = el.getRootNode ? el.getRootNode() : document;
+                        if (el.id) {
+                            const lbl = root.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+                            if (lbl) return lbl;
+                        }
+                        let p = el.parentElement;
+                        for (let i = 0; i < 5 && p; i++) {
+                            if (p.tagName === 'LABEL') return p;
+                            const role = p.getAttribute && p.getAttribute('role');
+                            if (role === 'radio' || role === 'checkbox' || role === 'button') return p;
+                            p = p.parentElement;
+                        }
+                        return null;
+                        """,
+                        el,
+                    )
+                    if fallback:
+                        try:
+                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", fallback)
+                            ActionChains(driver).move_to_element(fallback).pause(0.05).click().perform()
+                            clicked = True
+                        except Exception as e:
+                            logger.debug("page-filler: fallback click failed: {}", e)
+                if clicked:
+                    done += 1
             elif action == "select_combobox":
                 try:
                     ActionChains(driver).move_to_element(el).pause(0.05).click().perform()
@@ -204,11 +253,57 @@ def execute_actions(driver, actions: list[dict]) -> int:
                     """,
                     value,
                 )
+                if not option and re.search(r"decline|prefer not|don'?t (wish|want)|not (specified|specify|identify|disclose|to)|do not wish|choose not", value, re.I):
+                    # User asked for a 'decline' option but the exact wording
+                    # didn't match. Look for ANY option that semantically
+                    # matches "decline / choose not to / prefer not". Two
+                    # patterns: explicit "decline/undisclosed" terms, OR the
+                    # word "not" within a few words of disclose/specify/
+                    # identify/answer/say (covers "Choose not to disclose",
+                    # "I don't wish to specify", "Prefer not to say", etc.).
+                    option = driver.execute_script(
+                        """
+                        function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                            if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                            const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                        const re1 = /decline|undisclosed|not provided|prefer not/i;
+                        const re2 = /\\bnot\\b[^.]{0,20}\\b(disclose|specify|specified|identify|answer|say|tell|share)\\b/i;
+                        for (const el of dn(document)) {
+                            if (el.getAttribute && el.getAttribute('role') === 'option') {
+                                const r = el.getBoundingClientRect();
+                                if (r.width < 1 || r.height < 1) continue;
+                                const t = (el.textContent || '').trim();
+                                if (t && (re1.test(t) || re2.test(t))) return el;
+                            }
+                        }
+                        return null;
+                        """,
+                    )
                 if option:
                     option.click()
                     done += 1
                 else:
-                    logger.debug("page-filler: option '{}' not found for {}", value, sel[:60])
+                    # Log the actual options visible so the next page-filler
+                    # iteration's Claude prompt has truth.
+                    visible_opts = driver.execute_script(
+                        """
+                        function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                            if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                            const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                        const out = [];
+                        for (const el of dn(document)) {
+                            if (el.getAttribute && el.getAttribute('role') === 'option') {
+                                const r = el.getBoundingClientRect();
+                                if (r.width < 1 || r.height < 1) continue;
+                                const t = (el.textContent || '').trim();
+                                if (t) out.push(t);
+                            }
+                        }
+                        return out.slice(0, 12);
+                        """,
+                    ) or []
+                    logger.warning("page-filler: option '{}' not in {} — visible: {}",
+                                   value, sel[:50], visible_opts)
                     try:
                         el.send_keys(Keys.ESCAPE)
                     except Exception:
