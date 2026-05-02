@@ -4,14 +4,14 @@ Multi-channel job hunting automation: scrape job boards, find decision makers, g
 
 Built as a **modular monolith** with **hexagonal architecture inside each module** and **vertical slicing by business domain**.
 
-Inspired by [Cosmic Python](https://www.cosmicpython.com), with deviations:
+Choices that shape the layout:
 
-- **N bounded contexts**, not one — separate modules for companies, people, applies, automation
-- **Declarative SQLAlchemy** (`mapped_column`, `relationship`), not their imperative `Table()` + `mapper()`
-- **`typing.Protocol`** for ports, not `abc.ABC` — structural typing fits here better
-- **No `bootstrap.py`** — adapters are wired directly in the CLI command that needs them (composition root per command, no global container)
-- **No Unit of Work / Domain Events / Message Bus** — would be over-engineering for a CLI tool; will add when a real need shows up
-- **CLI-only** — no FastAPI / HTTP layer; the only "driving" entrypoint is `app/entrypoints/cli/`
+- **N bounded contexts** — separate modules for companies, people, applies, automation; each owns its entities, ports, adapters, services
+- **Declarative SQLAlchemy** (`mapped_column`, `relationship`) — one shared `Base` lives in `app/infra/db`, every module's `adapters/orm.py` extends it; cross-module FKs use string references so modules stay decoupled
+- **`typing.Protocol`** for ports — structural typing, no inheritance contract; adapters just match the shape
+- **No global DI container** — adapters are wired in the CLI command that needs them. The CLI is the composition root
+- **No Unit of Work / Domain Events / Message Bus** — out of scope for a single-user CLI; commits per session are enough
+- **CLI-only** — no HTTP / web layer; the only driving entrypoint is `app/entrypoints/cli/`
 
 ## Why
 
