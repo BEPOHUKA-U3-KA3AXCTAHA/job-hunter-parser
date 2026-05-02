@@ -183,6 +183,25 @@ async def fill_plan(req: FillPlanRequest) -> FillPlanResponse:
     return FillPlanResponse(actions=actions)
 
 
+@app.get("/resume")
+async def get_resume():
+    """Return the candidate's resume PDF as base64 + filename. The Firefox
+    extension fetches this and constructs a File object to drop into the
+    target form's <input type=file>.
+    """
+    import base64
+    from pathlib import Path
+    resume_path = Path(__file__).resolve().parents[3] / "resume_en.pdf"
+    if not resume_path.exists():
+        return {"error": "resume not found", "path": str(resume_path)}
+    data = resume_path.read_bytes()
+    return {
+        "filename": resume_path.name,
+        "mime": "application/pdf",
+        "base64": base64.b64encode(data).decode(),
+    }
+
+
 @app.get("/next-job")
 async def next_job():
     """Pop next candidate. Returns 404-shape JSON when queue empty so the

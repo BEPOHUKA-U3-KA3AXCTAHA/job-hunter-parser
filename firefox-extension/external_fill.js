@@ -218,11 +218,64 @@ function findSubmitButton() {
   return null;
 }
 
+async function uploadResumeIfPresent() {
+  // Find a file input that wants a CV/resume.
+  let target = null;
+  for (const inp of document.querySelectorAll('input[type="file"]')) {
+    const name = (inp.name || "").toLowerCase();
+    const id = (inp.id || "").toLowerCase();
+    const accept = (inp.accept || "").toLowerCase();
+    if (/resume|cv/.test(name + id) || /pdf|doc/.test(accept) || true) {
+      target = inp;
+      break;
+    }
+  }
+  if (!target) {
+    log("no <input type=file> on page");
+    return false;
+  }
+  // Fetch the resume from the local API.
+  let payload;
+  try {
+    const r = await fetch(`${API_BASE}/resume`);
+    if (!r.ok) throw new Error("resume API " + r.status);
+    payload = await r.json();
+    if (!payload.base64) throw new Error("no base64");
+  } catch (e) {
+    log("resume fetch failed:", e);
+    return false;
+  }
+  // base64 -> Blob -> File
+  const bin = atob(payload.base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const file = new File([bytes], payload.filename || "resume.pdf", {
+    type: payload.mime || "application/pdf",
+  });
+  // Inject into the file input via DataTransfer (works in real Firefox).
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    target.files = dt.files;
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    log("resume injected via DataTransfer");
+    return true;
+  } catch (e) {
+    log("DataTransfer failed:", e);
+    return false;
+  }
+}
+
 async function fillThisPage() {
   log("starting fill on", location.href);
+  // Upload CV first — many ATSes auto-parse it to pre-fill name/email/etc,
+  // shrinking the page-filler workload to just the custom questions.
+  await uploadResumeIfPresent();
+  await waitMs(2500);
   let lastErrors = [];
-  for (let attempt = 0; attempt < 4; attempt++) {
-    log(`==== attempt ${attempt + 1}/4 ====`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    log(`==== attempt ${attempt + 1}/3 ====`);
     const html = snapshotFormHtml();
     const r = await fetch(`${API_BASE}/fill-plan`, {
       method: "POST",
@@ -272,5 +325,22 @@ browser.runtime.onMessage.addListener(async (msg) => {
     return await fillThisPage();
   }
 });
+
+// Auto-trigger when the URL hash is #jhp-autofill — used by the
+// scripts/test_extension_fill.py harness so the bot can run end-to-end
+// without a manual popup click.
+async function maybeAutoFill() {
+  if (!location.hash.includes("jhp-autofill")) return;
+  log("auto-fill triggered by URL hash");
+  // Wait a moment for the form to fully render before snapshotting.
+  await waitMs(2500);
+  const result = await fillThisPage();
+  log("auto-fill result:", result);
+  // Stash the result so the harness can poll it from the page side.
+  try {
+    sessionStorage.setItem("jhp-autofill-result", JSON.stringify(result));
+  } catch (e) {}
+}
+maybeAutoFill();
 
 log("external_fill.js ready on", location.href);
