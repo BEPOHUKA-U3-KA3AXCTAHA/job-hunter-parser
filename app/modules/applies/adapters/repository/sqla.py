@@ -21,9 +21,9 @@ from app.modules.applies.models import (
 )
 from app.modules.applies.ports import ApplyRepository
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
-from app.modules.companies.models import Company
+from app.modules.companies import Company
 from app.infra.db.tables.people import DecisionMakerRow
-from app.modules.people.models import DecisionMaker, DecisionMakerRole
+from app.modules.people import DecisionMaker, DecisionMakerRole
 from app.shared import TechStack
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.modules.companies.models import Company
-from app.modules.people.models import DecisionMaker
+from app.modules.companies import Company
+from app.modules.people import DecisionMaker
 from app.shared import TechStack
 
 

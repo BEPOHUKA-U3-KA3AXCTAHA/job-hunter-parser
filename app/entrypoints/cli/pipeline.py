@@ -10,13 +10,13 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
-from app.modules.companies.models import Company, JobPosting
-from app.modules.companies.ports import CompanySource
-from app.modules.applies.models import Message, MessageChannel, MessageStatus
-from app.modules.applies.ports import LLMGenerator, ApplyRepository
-from app.modules.applies.services.score import RelevanceScorer
-from app.modules.people.models import DecisionMakerRole
-from app.modules.people.ports import ContactEnrichment, DecisionMakerSearch
+from app.modules.companies import Company, JobPosting
+from app.modules.companies import CompanySource
+from app.modules.applies import Message, MessageChannel, MessageStatus
+from app.modules.applies import LLMGenerator, ApplyRepository
+from app.modules.applies import RelevanceScorer
+from app.modules.people import DecisionMakerRole
+from app.modules.people import ContactEnrichment, DecisionMakerSearch
 from app.shared import CandidateProfile, SearchCriteria, TechStack
 
 console = Console()
@@ -251,7 +251,7 @@ def _company_domain(company: Company) -> str:
 
 
 def _empty_dm(company: Company):
-    from app.modules.people.models import DecisionMaker
+    from app.modules.people import DecisionMaker
     return DecisionMaker(
         full_name="Unknown (find manually)",
         role=DecisionMakerRole.OTHER,

@@ -23,7 +23,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from app.modules.applies.ports.mass_apply import MassApplyRepository, PendingOutreach
+from app.modules.applies import MassApplyRepository, PendingOutreach
 from app.modules.automation.adapters.camoufox import browser_session, human_sleep
 from app.modules.automation.adapters.linkedin_outreach import (
     INVITE_NOTE_MAX_CHARS,
@@ -38,8 +38,8 @@ MIN_GAP_BETWEEN_SENDS_S = 120
 
 
 def _default_repo() -> MassApplyRepository:
-    from app.modules.applies.adapters.repository.mass_apply import SqlaMassApplyRepository
-    return SqlaMassApplyRepository()
+    from app.modules.applies import default_mass_apply_repo
+    return default_mass_apply_repo()
 
 
 def make_short_note(body: str, name: str) -> str:

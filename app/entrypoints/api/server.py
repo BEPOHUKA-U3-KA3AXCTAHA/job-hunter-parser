@@ -114,7 +114,7 @@ async def answer_questions_endpoint(req: AnswerQuestionsRequest) -> AnswerQuesti
     Returns empty answers list if the LLM call failed (missing API key, bad
     JSON, etc) — caller should treat as "cannot auto-fill, bail to human".
     """
-    from app.modules.applies.services.answer_questions import (
+    from app.modules.applies import (
         FormQuestion,
         answer_questions,
     )

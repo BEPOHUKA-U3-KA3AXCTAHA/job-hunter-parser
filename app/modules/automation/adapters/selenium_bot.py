@@ -811,7 +811,7 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
 async def _autofill_via_llm(driver, page_idx: int, job_tag: str) -> int:
     """Extract unfilled required fields, ask Claude for answers, fill them.
     Returns count of successfully filled fields."""
-    from app.modules.applies.services.answer_questions import (
+    from app.modules.applies import (
         FormQuestion,
         answer_questions,
     )

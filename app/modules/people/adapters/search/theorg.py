@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 import httpx
 from loguru import logger
 
-from app.modules.companies.models import Company
+from app.modules.companies import Company
 from app.modules.people.models import DecisionMaker, DecisionMakerRole
 from app.modules.people.ports import ContactEnrichment, DecisionMakerSearch
 

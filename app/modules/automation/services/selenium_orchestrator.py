@@ -23,7 +23,7 @@ import httpx
 from loguru import logger
 
 from app.infra.db import init_db
-from app.modules.applies.ports.mass_apply import MassApplyRepository
+from app.modules.applies import MassApplyRepository
 from app.modules.automation.adapters.selenium_bot import (
     ApplyOutcome,
     ApplyResult,
@@ -34,9 +34,8 @@ from app.modules.automation.adapters.selenium_bot import (
 
 
 def _default_repo() -> MassApplyRepository:
-    """Lazy default — keeps the SQLA import out of module-load."""
-    from app.modules.applies.adapters.repository.mass_apply import SqlaMassApplyRepository
-    return SqlaMassApplyRepository()
+    from app.modules.applies import default_mass_apply_repo
+    return default_mass_apply_repo()
 
 MAX_APPLIES_PER_DAY = 30
 MAX_APPLIES_PER_BATCH = 5

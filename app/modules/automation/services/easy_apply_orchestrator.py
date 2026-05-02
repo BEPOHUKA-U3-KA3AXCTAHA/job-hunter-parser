@@ -22,7 +22,7 @@ from urllib.parse import quote_plus
 
 from loguru import logger
 
-from app.modules.applies.ports.mass_apply import MassApplyRepository
+from app.modules.applies import MassApplyRepository
 from app.modules.automation.adapters.camoufox import browser_session, human_sleep
 from app.modules.automation.adapters.linkedin_easy_apply import (
     ApplyOutcome,
@@ -38,8 +38,8 @@ MIN_GAP_S = 90
 
 
 def _default_repo() -> MassApplyRepository:
-    from app.modules.applies.adapters.repository.mass_apply import SqlaMassApplyRepository
-    return SqlaMassApplyRepository()
+    from app.modules.applies import default_mass_apply_repo
+    return default_mass_apply_repo()
 
 
 def _build_search_url(keywords: str, remote_only: bool = True) -> str:

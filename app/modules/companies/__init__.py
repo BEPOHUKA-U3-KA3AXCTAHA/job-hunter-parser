@@ -12,11 +12,14 @@ from app.modules.companies.models import (
     JobPostingNotFound,
 )
 from app.modules.companies.ports import CompanySource
+from app.modules.companies.ports.repository import CompanyRepository, JobApplyTarget
 
 __all__ = [
     "Company",
     "CompanyNotFound",
+    "CompanyRepository",
     "CompanySource",
+    "JobApplyTarget",
     "JobPosting",
     "JobPostingNotFound",
 ]

@@ -219,7 +219,7 @@ def hunt(
     Secrets (API keys) come from .env. App config from config.toml.
     """
     from app.infra.config import get_secrets, load_app_config
-    from app.modules.applies.models import MessageChannel
+    from app.modules.applies import MessageChannel
     from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
     from app.entrypoints.cli.pipeline import run_pipeline
     from app.shared import CandidateProfile, SearchCriteria
@@ -694,8 +694,8 @@ def curate(
     from app.infra.db import get_session_maker, init_db
     from app.modules.applies.adapters.repository.candidates import SqlaCandidateBundleRepository
     from app.modules.applies.adapters.repository.sqla import _upsert_message
-    from app.modules.applies.models import Message, MessageChannel, MessageStatus
-    from app.modules.applies.services.curate import filter_and_score
+    from app.modules.applies import Message, MessageChannel, MessageStatus
+    from app.modules.applies import filter_and_score
     from app.shared import CandidateProfile
 
     async def _run():
@@ -845,7 +845,7 @@ def apply_cmd(
     Conservative: 30/day, 5/batch, 90+s gap between applies. Auto-aborts on
     LinkedIn warning pages (CAPTCHA / verify / restricted).
     """
-    from app.modules.automation.services.selenium_orchestrator import run_batch
+    from app.modules.automation import run_batch
 
     async def _run():
         kws = [k.strip() for k in keywords.split(",") if k.strip()]
@@ -878,7 +878,7 @@ def easy_apply_cmd(
 
     Selectors copied from wodsuz/EasyApplyJobsBot (battle-tested aria-label-based).
     """
-    from app.modules.automation.easy_apply_orchestrator import run_easy_apply_batch
+    from app.modules.automation import run_easy_apply_batch
     from app.infra.db import init_db
 
     async def _run():
@@ -914,7 +914,7 @@ def send_outreach_cmd(
       1. Make sure Firefox has a logged-in LinkedIn session (we read cookies)
       2. Run with --no-headless once to confirm Camoufox lands on /feed/
     """
-    from app.modules.automation.services.send_orchestrator import run_send_batch
+    from app.modules.automation import run_send_batch
     from app.infra.db import init_db
 
     async def _run():
