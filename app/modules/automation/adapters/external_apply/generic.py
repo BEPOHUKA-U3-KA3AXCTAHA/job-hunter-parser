@@ -320,23 +320,44 @@ class GenericHandler:
 
         last_errors: list[str] = []
         for attempt in range(3):
-            raw_qs = extract_unfilled_questions(driver)
-            if raw_qs:
-                logger.info("generic[{}] attempt {}: {} unfilled required field(s)",
-                            host, attempt + 1, len(raw_qs))
-                questions = [
-                    FormQuestion(
-                        label=q["label"], type=q["type"], options=q.get("options") or [],
-                        name=q.get("name", ""), required=q.get("required", True),
-                    )
-                    for q in raw_qs
-                ]
-                answers = asyncio.run(answer_questions(
-                    questions, job_title=ctx.job_title, company_name=ctx.company,
-                ))
-                if answers:
-                    qa_pairs = [(raw_qs[i], answers[i].answer) for i in range(len(answers))]
-                    filled += fill_answers(driver, qa_pairs)
+            if attempt == 0:
+                # Standard pipeline first — fast, free (cache hits), works on
+                # most forms.
+                raw_qs = extract_unfilled_questions(driver)
+                if raw_qs:
+                    logger.info("generic[{}] attempt 1: {} unfilled required field(s)",
+                                host, len(raw_qs))
+                    questions = [
+                        FormQuestion(
+                            label=q["label"], type=q["type"], options=q.get("options") or [],
+                            name=q.get("name", ""), required=q.get("required", True),
+                        )
+                        for q in raw_qs
+                    ]
+                    answers = asyncio.run(answer_questions(
+                        questions, job_title=ctx.job_title, company_name=ctx.company,
+                    ))
+                    if answers:
+                        qa_pairs = [(raw_qs[i], answers[i].answer) for i in range(len(answers))]
+                        filled += fill_answers(driver, qa_pairs)
+            else:
+                # Fallback: page-snapshot Claude. Sees the WHOLE form +
+                # whatever errors the prior submit raised, returns an action
+                # plan that handles weird widgets the field-level extractor
+                # missed (custom comboboxes, button-style toggles, etc).
+                from app.modules.automation.services.page_filler import (
+                    fill_form_via_page_snapshot,
+                )
+                from app.shared.candidate_profile import CandidateProfile
+                profile = CandidateProfile()
+                logger.info("generic[{}] attempt {}: page-snapshot Claude pass",
+                            host, attempt + 1)
+                done = fill_form_via_page_snapshot(
+                    driver, profile.user_info or "", prior_errors=last_errors,
+                )
+                logger.info("generic[{}] attempt {}: page-filler executed {} action(s)",
+                            host, attempt + 1, done)
+                filled += done
 
             time.sleep(1)
             submitted = click_button_by_text(
@@ -345,12 +366,14 @@ class GenericHandler:
                 timeout=3,
             )
             if not submitted:
-                return AtsResult(
-                    success=False,
-                    detail=f"generic[{host}]: no submit button found",
-                    ats_name=self.name,
-                    fields_filled=filled,
-                )
+                # Apply button still disabled — collect current errors so the
+                # next attempt's page-filler sees them.
+                last_errors = detect_form_errors(driver) or [
+                    "submit button still disabled — required fields missing"
+                ]
+                logger.warning("generic[{}] attempt {}/3: submit disabled — {}",
+                               host, attempt + 1, " | ".join(last_errors[:2])[:160])
+                continue
             time.sleep(3)
             last_errors = detect_form_errors(driver)
             if not last_errors:
