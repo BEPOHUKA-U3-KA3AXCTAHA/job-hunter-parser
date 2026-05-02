@@ -638,13 +638,29 @@ def extract_unfilled_questions(driver) -> list[dict]:
                 // text/number/tel/email — surface optional fields too; the LLM
                 // decides whether to fill via confidence threshold.
                 if (el.value && el.value.trim()) continue;
-                // Skip ARIA combobox / search-as-you-type widgets (e.g. react-select
-                // country code, location autocomplete). They need a typeahead +
-                // dropdown-click flow which the generic LLM-fill cannot drive,
-                // and they pollute the question pool with unanswerable labels.
-                if (el.getAttribute('role') === 'combobox' ||
+                // ARIA combobox / search-as-you-type widgets (react-select,
+                // country code pickers, location autocomplete). If REQUIRED,
+                // route through the combobox-with-options extractor below
+                // (LLM gets real choices and picks one). If OPTIONAL, skip —
+                // they tend to pollute the question pool with auto-pickers
+                // we don't actually need to set.
+                const isCombo = el.getAttribute('role') === 'combobox' ||
                     el.getAttribute('aria-autocomplete') === 'list' ||
-                    el.getAttribute('aria-haspopup') === 'listbox') continue;
+                    el.getAttribute('aria-haspopup') === 'listbox';
+                if (isCombo) {
+                    if (!isRequired(el)) continue;
+                    // Find a question label (placeholder/aria-label often
+                    // says 'Search' — useless; prefer findLabel which walks
+                    // for sibling text).
+                    const lbl = findLabel(el) || el.getAttribute('aria-label') || el.placeholder || '';
+                    out.push({
+                        label: lbl, type: 'select', options: [],
+                        name: el.name || el.id || '', placeholder: el.placeholder || '',
+                        required: true, _selector: cssPath(el),
+                        _div_combobox: true,  // same fill path as div-combobox
+                    });
+                    continue;
+                }
                 out.push({
                     label: findLabel(el), type: t || 'text', options: [],
                     name: el.name || el.id || '', placeholder: el.placeholder || '',
@@ -1014,47 +1030,84 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
     # 2) Button-style yes/no toggles: re-walk via JS to find the right
     #    container by index, then click via Selenium so the button receives
     #    a trusted event (Ashby state listeners ignore JS-dispatched clicks).
-    # 3) Div-based comboboxes: click to open, find option matching answer,
-    #    click. Done before yesno so the spawned dropdowns settle first.
+    # 3) Div / input-based comboboxes: open dropdown, find option matching
+    #    the LLM answer; if not visible and the combobox is searchable,
+    #    type the answer to filter, then look again. Universal across
+    #    react-select, Headless UI, Rippling's etc2niq pickers, etc.
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.common.keys import Keys
+
+    def _find_option(answer: str):
+        return driver.execute_script(
+            """
+            function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+            const want = arguments[0].toLowerCase();
+            let contains = null;
+            for (const el of dn(document)) {
+                if (el.getAttribute && el.getAttribute('role') === 'option') {
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 1 || r.height < 1) continue;
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    if (!t) continue;
+                    if (t === want) return el;
+                    if (!contains && t.includes(want)) contains = el;
+                }
+            }
+            return contains;
+            """,
+            answer,
+        )
+
     combo_qs = [(q, a) for q, a in qa_pairs if a and q.get("_div_combobox")]
     for q, a in combo_qs:
         sel = q.get("_selector") or ""
         try:
             combo = driver.find_element(By.CSS_SELECTOR, sel)
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", combo)
-            combo.click()
+            # Real mouse-click — synthesized .click() doesn't open all React
+            # comboboxes (e.g. Rippling listens for true pointer events).
+            try:
+                ActionChains(driver).move_to_element(combo).pause(0.1).click().perform()
+            except Exception:
+                combo.click()
             time.sleep(0.5)
-            # Find matching role=option (case-insensitive substring match
-            # so 'Yes' matches 'Yes, I require sponsorship', etc.).
-            target = driver.execute_script(
-                """
-                function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
-                    if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
-                    const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
-                const want = arguments[0].toLowerCase();
-                let exact = null, contains = null;
-                for (const el of dn(document)) {
-                    if (el.getAttribute && el.getAttribute('role') === 'option') {
-                        const r = el.getBoundingClientRect();
-                        if (r.width < 1 || r.height < 1) continue;
-                        const t = (el.textContent || '').trim().toLowerCase();
-                        if (!t) continue;
-                        if (t === want) return el;
-                        if (!contains && t.includes(want)) contains = el;
-                    }
-                }
-                return contains;
-                """,
-                a,
-            )
+            target = _find_option(a)
+            if not target:
+                # Try typing into the combobox to filter (only useful for
+                # search-as-you-type widgets — large country lists, location
+                # autocompletes, etc.). Find the inner search input if combo
+                # itself isn't typeable.
+                try:
+                    typer = combo
+                    if combo.tag_name.lower() != "input":
+                        typer = combo.find_element(By.CSS_SELECTOR,
+                            "input[role='combobox'], input[data-input*='search']")
+                except Exception:
+                    typer = combo
+                try:
+                    typer.click()
+                    typer.send_keys(Keys.CONTROL, "a")
+                    typer.send_keys(Keys.DELETE)
+                    typer.send_keys(a)
+                    time.sleep(0.8)
+                except Exception:
+                    try:
+                        ActionChains(driver).send_keys(a).perform()
+                        time.sleep(0.8)
+                    except Exception:
+                        pass
+                target = _find_option(a)
             if target:
                 target.click()
                 time.sleep(0.4)
             else:
                 logger.debug("combobox option '{}' not found in dropdown", a)
-                # Press Escape to close the unselected dropdown.
-                from selenium.webdriver.common.keys import Keys
-                combo.send_keys(Keys.ESCAPE)
+                try:
+                    combo.send_keys(Keys.ESCAPE)
+                except Exception:
+                    pass
         except Exception as e:
             logger.debug("div-combobox fill failed for {}: {}", sel[:50], e)
 

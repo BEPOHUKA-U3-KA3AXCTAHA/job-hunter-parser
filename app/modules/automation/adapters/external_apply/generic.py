@@ -92,49 +92,139 @@ class GenericHandler:
             digits_value = re.sub(r"^\+\d{1,3}", "", digits_value)
 
         if combo and profile_phone.startswith("+"):
+            from selenium.webdriver.common.by import By as _By
+            from selenium.webdriver.common.keys import Keys
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
             try:
-                combo.click()
-                time.sleep(0.3)
-                combo.send_keys("Montenegro")
-                time.sleep(0.8)
-                # Click first visible role=option containing 'Montenegro'.
-                clicked = driver.execute_script(
-                    """
-                    function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
-                        if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
-                        const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
-                    for (const el of dn(document)) {
-                        if (el.getAttribute && el.getAttribute('role') === 'option') {
-                            const t = (el.textContent || '').toLowerCase();
-                            if (!t.includes('montenegro')) continue;
-                            const r = el.getBoundingClientRect();
-                            if (r.width < 1 || r.height < 1) continue;
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                    """
-                )
+                from selenium.webdriver.common.action_chains import ActionChains
+                # Open the dropdown — Rippling listens for real mouse events,
+                # not synthesized clicks. Use ActionChains for a true
+                # move-then-click, then verify the listbox opened.
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", combo)
+                try:
+                    ActionChains(driver).move_to_element(combo).pause(0.1).click().perform()
+                except Exception:
+                    combo.click()
+                time.sleep(0.6)
+                option_count = driver.execute_script(
+                    "return document.querySelectorAll('[role=option]').length"
+                ) or 0
+                logger.info("phone: dropdown opened, {} option(s) visible", option_count)
+                # Type to filter. The "combobox" element may be a wrapper —
+                # the real searchable input is often a child with
+                # data-input='select-search-input'. Try the inner input
+                # first; fall back to the combobox itself, then to body keys
+                # via ActionChains.
+                inner = None
+                try:
+                    inner = combo.find_element(_By.CSS_SELECTOR,
+                        "input[data-input*='select-search'], input[role='combobox']")
+                except Exception:
+                    pass
+                if inner is None:
+                    try:
+                        # Look up to the combobox's parent container.
+                        parent = combo.find_element(_By.XPATH, "..")
+                        inner = parent.find_element(_By.CSS_SELECTOR,
+                            "input[data-input*='select-search'], input[role='combobox']")
+                    except Exception:
+                        pass
+                target_input = inner or combo
+                try:
+                    target_input.click()
+                    time.sleep(0.1)
+                    # The combobox input pre-fills its current selection
+                    # (e.g. '+44 GB') as text. Clear first via Ctrl-A + Delete
+                    # so 'Montenegro' replaces, not appends.
+                    target_input.send_keys(Keys.CONTROL, "a")
+                    time.sleep(0.05)
+                    target_input.send_keys(Keys.DELETE)
+                    time.sleep(0.05)
+                    target_input.send_keys("Montenegro")
+                except Exception:
+                    ActionChains(driver).send_keys("Montenegro").perform()
+                time.sleep(1.0)
+                # Wait up to 3s for an option whose text contains 'Montenegro'
+                # to become clickable. Try multiple strategies — listbox is
+                # often portal-rendered to <body>, so a full-document XPath
+                # with `contains()` is more reliable than walking a subtree.
+                option_xpath = ("//*[@role='option' and "
+                                "contains(translate(., 'MONTENEGRO', 'montenegro'), 'montenegro')]")
+                clicked = False
+                try:
+                    target = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((_By.XPATH, option_xpath))
+                    )
+                    target.click()
+                    clicked = True
+                except Exception:
+                    pass
+                if not clicked:
+                    # Last resort: keyboard nav. Press Down a few times +
+                    # Enter — the combo input filters to Montenegro after the
+                    # send_keys above so DOWN+ENTER picks the first match.
+                    try:
+                        combo.send_keys(Keys.ARROW_DOWN)
+                        time.sleep(0.2)
+                        combo.send_keys(Keys.ENTER)
+                        time.sleep(0.4)
+                        cur = (combo.get_attribute("value") or
+                               combo.get_attribute("aria-label") or "").lower()
+                        if "montenegro" in cur or "+382" in cur:
+                            clicked = True
+                    except Exception:
+                        pass
                 if clicked:
                     time.sleep(0.4)
                     logger.info("generic: country set to Montenegro, phone digits='{}'", digits_value)
                 else:
-                    logger.info("phone: Montenegro option not found — country left at default; submitting digits anyway")
+                    logger.warning("phone: Montenegro option not found — country left at default; phone may be rejected")
             except Exception as e:
                 logger.debug("country-combobox setup failed: {}", e)
 
-        # Step 3 — fill the phone input.
-        try:
-            phone_el.click()
+        # Step 3 — fill the phone input. Re-find via Selenium native
+        # find_element (not find_visible's execute_script) — after a country
+        # change Rippling rebuilds the React tree and the prior reference
+        # becomes stale.
+        time.sleep(0.4)
+        fresh_phone = None
+        for sel in [
+            "input[inputmode=tel]",
+            "input[type=tel]",
+            "input[placeholder*='phone' i]",
+        ]:
             try:
-                phone_el.clear()
+                cands = driver.find_elements(By.CSS_SELECTOR, sel)
+                for c in cands:
+                    if c.is_displayed() and not (c.get_attribute("value") or "").strip():
+                        fresh_phone = c
+                        break
+                if fresh_phone:
+                    break
+            except Exception:
+                continue
+        target = fresh_phone or phone_el
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
+            target.click()
+            try:
+                target.clear()
             except Exception:
                 pass
-            phone_el.send_keys(digits_value)
+            target.send_keys(digits_value)
+            time.sleep(0.3)
+            cur = (target.get_attribute("value") or "").strip()
+            if not cur:
+                # send_keys silently rejected — try character-by-character via
+                # ActionChains so each keystroke is a real event.
+                from selenium.webdriver.common.action_chains import ActionChains
+                target.click()
+                ActionChains(driver).pause(0.1).send_keys(digits_value).perform()
             return True
-        except Exception:
-            return fill_input(driver, phone_el, digits_value)
+        except Exception as e:
+            logger.debug("phone fill failed after re-find: {}", e)
+            return fill_input(driver, target, digits_value)
 
     def apply(self, driver, ctx: AtsContext) -> AtsResult:
         time.sleep(2.5)
