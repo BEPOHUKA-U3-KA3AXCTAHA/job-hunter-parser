@@ -250,8 +250,9 @@ def click_submit(driver, candidates: list[str]) -> bool:
 
 
 def click_button_by_text(driver, regex: str, timeout: float = 4.0) -> bool:
-    """Click first visible <button> whose text or aria-label matches regex.
-    Walks shadow DOM."""
+    """Click first visible enabled <button> whose text or aria-label matches.
+    Walks shadow DOM. Skips disabled buttons (incl. aria-disabled / pointer-
+    events:none) so a disabled submit isn't reported as a successful click."""
     js = """
         function* deepNodes(root) {
             if (!root) return;
@@ -270,8 +271,14 @@ def click_button_by_text(driver, regex: str, timeout: float = 4.0) -> bool:
             if (el.tagName !== 'BUTTON' && el.tagName !== 'A' &&
                 (!el.getAttribute || el.getAttribute('role') !== 'button')) continue;
             if (el.disabled) continue;
+            if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') continue;
             const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
             if (!r || r.width < 4 || r.height < 4) continue;
+            // Skip buttons styled as disabled (Rippling sets pointer-events:none).
+            try {
+                const style = window.getComputedStyle(el);
+                if (style && style.pointerEvents === 'none') continue;
+            } catch (e) {}
             const t = (el.textContent || '').trim();
             const a = (el.getAttribute && el.getAttribute('aria-label')) || '';
             if (re.test(t) || re.test(a)) return el;
@@ -322,19 +329,40 @@ def detect_form_errors(driver) -> list[str]:
             }
         }
         const errors = [];
-        const reError = /missing entry|required|please (enter|select|fill|complete)|invalid|errors? on the form|needs corrections/i;
+        const reError = /missing entry|this field is required|^required\\b|please (enter|select|fill|complete)|errors? on the form|needs corrections/i;
+        // Pass A — elements that look like errors structurally and contain
+        // matching text in their own subtree (alerts, error banners, form
+        // validation summaries). Catches Ashby's red banner.
         for (const el of deepNodes(document)) {
             if (!el.getBoundingClientRect) continue;
             const role = el.getAttribute && el.getAttribute('role');
-            const aria = el.getAttribute && el.getAttribute('aria-invalid');
             const cls = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || '';
-            const looksError = role === 'alert' || aria === 'true' ||
+            const isAlertLike = role === 'alert' ||
                 /\\b(error|invalid|required-warning|form-error|errorBanner)\\b/i.test(typeof cls === 'string' ? cls : '');
-            if (!looksError) continue;
+            if (!isAlertLike) continue;
             const r = el.getBoundingClientRect();
             if (r.width < 1 || r.height < 1) continue;
             const t = (el.textContent || '').trim();
             if (t && reError.test(t)) errors.push(t.slice(0, 200));
+        }
+        // Pass B — aria-invalid inputs (Rippling, Workday) where the
+        // helptext lives in a sibling span with opaque class names. Walk
+        // up to the field wrapper and look for any visible text matching
+        // the validation regex.
+        for (const el of deepNodes(document)) {
+            if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' &&
+                el.tagName !== 'SELECT') continue;
+            if (el.getAttribute && el.getAttribute('aria-invalid') === 'true') {
+                let p = el.parentElement;
+                for (let i = 0; i < 4 && p; i++) {
+                    const txt = (p.textContent || '').trim();
+                    if (reError.test(txt)) {
+                        errors.push(txt.slice(0, 200));
+                        break;
+                    }
+                    p = p.parentElement;
+                }
+            }
         }
         return errors;
     """

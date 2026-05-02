@@ -583,9 +583,14 @@ def extract_unfilled_questions(driver) -> list[dict]:
                         const lbl = findLabel(r);
                         return lbl || r.value || '';
                     });
-                    // Radio question label: walk up to find the wrapping
-                    // [role=group][aria-labelledby] or <fieldset><legend>.
-                    // The per-radio findLabel only returns "Yes"/"No".
+                    // Radio question label resolution — order from strongest
+                    // signal to weakest:
+                    //   1) Wrapper [aria-labelledby] / <fieldset><legend>.
+                    //   2) A nearby <p>/<label>/<legend>/<h*> with '?' or '*'
+                    //      that doesn't itself match the per-radio options
+                    //      (e.g. Rippling renders the question in a sibling
+                    //      <p>, OUTSIDE the radiogroup div).
+                    //   3) Strip the per-radio label's trailing word.
                     let groupLabel = '';
                     const root = el.getRootNode ? el.getRootNode() : document;
                     let p = el.parentElement;
@@ -600,6 +605,25 @@ def extract_unfilled_questions(driver) -> list[dict]:
                             if (lg) groupLabel = (lg.textContent || '').trim();
                         }
                         p = p.parentElement;
+                    }
+                    if (!groupLabel) {
+                        // Walk up looking for a question-text node nearby —
+                        // try each ancestor's children (not just descendants).
+                        let q = el.parentElement;
+                        for (let i = 0; i < 8 && q && !groupLabel; i++) {
+                            for (const sib of (q.children || [])) {
+                                if (sib === el) continue;
+                                if (!/^(P|LABEL|LEGEND|SPAN|DIV|H[1-6])$/.test(sib.tagName)) continue;
+                                const txt = (sib.textContent || '').trim();
+                                if (!txt || txt.length > 400) continue;
+                                if (!/[?:*]/.test(txt)) continue;
+                                // Skip if it's just the option labels stitched together.
+                                if (options.some(o => o && txt === o)) continue;
+                                groupLabel = txt;
+                                break;
+                            }
+                            q = q.parentElement;
+                        }
                     }
                     out.push({
                         label: groupLabel
