@@ -22,6 +22,7 @@ import app.infra.db.tables.applies  # noqa: F401  ApplyRow
 import app.infra.db.tables.companies  # noqa: F401  CompanyRow, JobPostingRow
 import app.infra.db.tables.form_answers  # noqa: F401  FormAnswerRow
 import app.infra.db.tables.people  # noqa: F401  DecisionMakerRow
+import app.infra.db.tables.users  # noqa: F401  UserRow
 
 config = context.config
 

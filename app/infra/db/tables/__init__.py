@@ -6,5 +6,9 @@ from app.infra.db.tables.applies import ApplyRow
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.infra.db.tables.form_answers import FormAnswerRow
 from app.infra.db.tables.people import DecisionMakerRow
+from app.infra.db.tables.users import UserRow
 
-__all__ = ["ApplyRow", "CompanyRow", "DecisionMakerRow", "FormAnswerRow", "JobPostingRow"]
+__all__ = [
+    "ApplyRow", "CompanyRow", "DecisionMakerRow",
+    "FormAnswerRow", "JobPostingRow", "UserRow",
+]

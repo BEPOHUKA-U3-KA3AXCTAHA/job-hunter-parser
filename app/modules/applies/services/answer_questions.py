@@ -56,6 +56,10 @@ def _build_prompt(
     company_name: str,
     profile: CandidateProfile,
 ) -> str:
+    user_info_block = (
+        profile.user_info
+        or "(no user profile in DB yet — fall back to CV + visa block below)"
+    )
     cv = profile.cv_text or "(CV file not available — fall back to general knowledge.)"
     visa_block = (
         f"- EU citizen: {'yes' if profile.eu_citizen else 'NO'}\n"
@@ -78,25 +82,28 @@ def _build_prompt(
         )
     qs_block = "\n".join(qs_block_lines)
 
-    return f"""You are filling out a job application form on behalf of the candidate. Use the candidate's CV (verbatim copy below) as the PRIMARY source of truth for every factual answer. Use the visa block for any work-authorization / sponsorship question. Reply ONLY with a JSON array, one object per question, in the same order.
+    return f"""You are filling out a job application form on behalf of the candidate. Use the USER PROFILE block as the PRIMARY source of truth — it overrides everything else (CV, defaults). Use the CV as a SECONDARY source for facts the user profile doesn't mention (work history, project details). Use the visa block for any work-authorization / sponsorship question. Reply ONLY with a JSON array, one object per question, in the same order.
 
 Each object: {{"answer": "<string>", "confidence": <0.0-1.0>, "reasoning": "<short why>"}}
 
 Rules:
-- Treat the CV as ground truth. If a fact is in the CV (LinkedIn handle, languages, years of experience, projects, skills, education) — use it verbatim. NEVER fabricate a value the CV doesn't support.
-- LinkedIn / LinkedIn URL field: use the LinkedIn handle from the CV. If the CV says "LinkedIn: <handle>" then answer "https://www.linkedin.com/in/<handle>/".
+- USER PROFILE wins over CV. If the CV says "LinkedIn: foo" but the user profile says "linkedin: bar", use "bar". Same for any contact info, location, salary, etc.
+- LinkedIn / LinkedIn URL: use the EXACT URL the user profile gives. If the user profile only has a handle, expand to "https://www.linkedin.com/in/<handle>/". Never invent a URL not supported by either source.
 - Numeric / salary questions: respond with the number ONLY (e.g. "{profile.salary_floor_eur}", not "€{profile.salary_floor_eur:,}"). Default floor for senior backend remote: {profile.salary_floor_eur} EUR / {profile.salary_floor_usd} USD per year, adjust upward for FAANG / US-payroll / staff+ roles.
-- Visa / sponsorship: candidate is NOT an EU citizen and has NO EU work permit (see visa block). If the role is in an EU country (Portugal, Germany, etc.) and the question asks "do you require sponsorship to work in <country>?" — answer YES (sponsorship needed). The fact that this question is ASKED at all means the role is not pure remote-anywhere. For "Are you authorized to work in <country>?" — answer NO unless the country happens to be Montenegro/Russia.
-- English level — take from the CV's LANGUAGES line VERBATIM. If CV says "B2", do NOT upgrade to "Advanced" or "Fluent". Match the option closest to "B2" / "Upper Intermediate".
-- Years of <tech>: derive from the CV. Years of total commercial experience = years since the earliest role.
-- "Why are you interested?" / cover-letter style: 2-3 sentences max, reference the company name + one specific job-description detail + one matching CV highlight.
+- Visa / sponsorship: see VISA block. If the role is in an EU country and the question asks "do you require sponsorship to work in <country>?" — answer YES. The fact that this question is asked at all means the role is not pure remote-anywhere. For "Are you authorized to work in <country>?" — answer NO unless the country is Montenegro/Russia.
+- Language level — take VERBATIM from user profile or CV. If user profile says "English: B2", do NOT upgrade to "Advanced" or "Fluent". Match the option closest to the stated level.
+- Years of <tech>: derive from user profile or CV.
+- "Why are you interested?" / cover-letter style: 2-3 sentences max, reference the company name + one specific job-description detail + one matching highlight from CV/user profile.
 - "How did you hear about us?" — "LinkedIn".
 - Optional fields: only fill if confidence ≥ 0.6. Otherwise answer "" with confidence < 0.5 and the bot will skip.
 - If you genuinely cannot answer (e.g. US SSN, country-specific ID), answer "" and set confidence=0.
 
 Return ONLY the JSON array, no prose, no markdown fences.
 
-CANDIDATE CV (ground truth):
+USER PROFILE (ground truth — overrides CV):
+{user_info_block}
+
+CANDIDATE CV (secondary source):
 {cv}
 
 VISA / WORK AUTHORIZATION:

@@ -29,6 +29,31 @@ def _load_cv_text() -> str:
         return ""
 
 
+def _load_user_info() -> str:
+    """Read free-form profile text from the users table (default user).
+
+    This is the SOURCE OF TRUTH for everything the LLM puts in form fields
+    (LinkedIn URL, Telegram, location/visa, etc.) — overrides the CV PDF
+    which may carry stale data. Empty string if no users yet.
+    """
+    try:
+        # Lazy + sync — CandidateProfile is constructed in non-async paths
+        import asyncio
+        from app.modules.users import default_user_repo
+        repo = default_user_repo()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            # In async context — caller should pre-load via async; bail
+            return ""
+        user = asyncio.run(repo.get_default())
+        return (user.info or "").strip() if user else ""
+    except Exception:
+        return ""
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateProfile:
     """Who is searching."""
@@ -74,6 +99,15 @@ class CandidateProfile:
 
     # ---- ATS form-autofill context ----------------------------------------
     # Full CV text — primary source of truth for the answer_questions LLM.
+    # Free-form user profile from the `users` table — this is the LLM's
+    # ground truth (real LinkedIn URL, Telegram, visa status, etc.) and
+    # OVERRIDES anything parsed from the CV PDF (which may carry stale
+    # info like a wrong handle).
+    user_info: str = field(default_factory=_load_user_info)
+
+    # CV text is a secondary source — used when the user_info field is
+    # empty or doesn't mention a particular fact (work history, projects,
+    # tech depth, etc.). Falls back gracefully if PDF is missing.
     cv_text: str = field(default_factory=_load_cv_text)
 
     # Visa / work-authorization facts (not in the CV — encode explicitly so
