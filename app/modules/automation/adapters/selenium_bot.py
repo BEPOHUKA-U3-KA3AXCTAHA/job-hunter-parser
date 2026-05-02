@@ -931,7 +931,7 @@ def _try_external_apply(driver, ext_btn, company_name: str, job_title: str, job_
     matching ATS handler. Returns ApplyResult on success/failure, or None if
     the click didn't open a new tab (caller falls back to other paths)."""
     from app.modules.automation.adapters.external_apply import (
-        AtsContext, channel_for_handler, pick_handler,
+        channel_for_handler, load_ats_context, pick_handler,
     )
 
     main_handles = driver.window_handles[:]
@@ -962,8 +962,7 @@ def _try_external_apply(driver, ext_btn, company_name: str, job_title: str, job_
     logger.info("external apply: ATS={} URL={}", handler.name, ats_url[:120])
 
     try:
-        # Pull user info from DB to seed the handler context
-        ctx = AtsContext(
+        ctx = load_ats_context(
             company=company_name or "(unknown)",
             job_title=job_title,
             job_url=job_url,

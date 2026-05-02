@@ -23,19 +23,95 @@ RESUME_PATH = Path(__file__).resolve().parents[5] / "resume_en.pdf"
 
 @dataclass(slots=True)
 class AtsContext:
-    """Per-job context handed to each ATS handler."""
+    """Per-job context handed to each ATS handler.
+
+    Profile fields are populated by `load_ats_context()` from the `users.info`
+    free-form text in the DB — single source of truth, never hardcode here.
+    """
 
     company: str
     job_title: str
     job_url: str        # the LinkedIn job URL we came from (for logs)
     ats_url: str        # the external URL the Apply button took us to
-    profile_first_name: str = "Sergey"
-    profile_last_name: str = "Sergeev"
-    profile_email: str = "serzhserg98@gmail.com"
-    profile_phone: str = "+38268914841"
-    profile_location: str = "Bar, Montenegro"
-    profile_linkedin: str = "https://www.linkedin.com/in/sergey-sergeev/"
+    profile_first_name: str = ""
+    profile_last_name: str = ""
+    profile_email: str = ""
+    profile_phone: str = ""
+    profile_location: str = ""
+    profile_linkedin: str = ""
     resume_path: Path = RESUME_PATH
+
+
+def _parse_profile(info: str) -> dict[str, str]:
+    """Pull canonical profile fields out of free-form `users.info` text.
+
+    Recognized lines (case-insensitive):
+        Name: Sergey Sergeev
+        Email: ...
+        Phone: ...
+        Location: Bar, Montenegro (...)         -> 'Bar, Montenegro' (strip paren tail)
+        LinkedIn: handle  (URL: https://...)    -> the URL inside parens
+    Returns dict with keys: first_name, last_name, email, phone, location, linkedin.
+    """
+    out: dict[str, str] = {}
+    if not info:
+        return out
+    # First-match-wins: the structured header in users.info comes BEFORE the
+    # verbatim CV dump, and the structured values are authoritative (the CV
+    # may carry stale or less specific data, e.g. 'Montenegro' vs 'Bar, MNE').
+    for raw in info.splitlines():
+        line = raw.strip()
+        low = line.lower()
+        if low.startswith("name:") and "first_name" not in out:
+            full = line.split(":", 1)[1].strip()
+            parts = full.split(maxsplit=1)
+            if parts:
+                out["first_name"] = parts[0]
+                out["last_name"] = parts[1] if len(parts) > 1 else ""
+        elif low.startswith("email:") and "email" not in out:
+            out["email"] = line.split(":", 1)[1].strip()
+        elif low.startswith("phone:") and "phone" not in out:
+            out["phone"] = line.split(":", 1)[1].strip()
+        elif low.startswith("location:") and "location" not in out:
+            val = line.split(":", 1)[1].strip()
+            # 'Bar, Montenegro (UTC+2). Open to remote ...' -> 'Bar, Montenegro'
+            val = re.split(r"[(.]", val, maxsplit=1)[0].strip().rstrip(",")
+            out["location"] = val
+        elif low.startswith("linkedin:") and "linkedin" not in out:
+            m = re.search(r"URL:\s*(https?://\S+?)\s*\)", line, re.IGNORECASE)
+            if m:
+                out["linkedin"] = m.group(1).strip()
+            else:
+                handle = line.split(":", 1)[1].strip().lstrip("@/ ")
+                if handle and not handle.startswith("http"):
+                    out["linkedin"] = f"https://www.linkedin.com/in/{handle}/"
+                elif handle:
+                    out["linkedin"] = handle
+    return out
+
+
+def load_ats_context(
+    company: str, job_title: str, job_url: str, ats_url: str,
+) -> AtsContext:
+    """Build an `AtsContext` populated from the default user's `users.info`.
+
+    All profile fields come from the DB — the only ground truth. If the user
+    record is missing a field, it stays empty and the handler skips it.
+    """
+    from app.shared.candidate_profile import _load_user_info  # avoid cycle
+    info = _load_user_info()
+    p = _parse_profile(info)
+    if not p:
+        logger.warning("load_ats_context: users.info empty or unparseable")
+    return AtsContext(
+        company=company, job_title=job_title, job_url=job_url, ats_url=ats_url,
+        profile_first_name=p.get("first_name", ""),
+        profile_last_name=p.get("last_name", ""),
+        profile_email=p.get("email", ""),
+        profile_phone=p.get("phone", ""),
+        profile_location=p.get("location", ""),
+        profile_linkedin=p.get("linkedin", ""),
+    )
 
 
 @dataclass(slots=True)
