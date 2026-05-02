@@ -187,7 +187,7 @@ async def run_pipeline(
             ]
             from app.infra.db import get_session_maker
             if bodyless:
-                from app.modules.applies.adapters.sqla_repository import _upsert_company, _upsert_decision_maker
+                from app.modules.applies.adapters.repository.sqla import _upsert_company, _upsert_decision_maker
                 Session = get_session_maker()
                 async with Session() as session:
                     for m in bodyless:

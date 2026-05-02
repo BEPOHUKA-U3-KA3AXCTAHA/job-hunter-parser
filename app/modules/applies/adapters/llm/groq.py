@@ -8,7 +8,7 @@ from __future__ import annotations
 import httpx
 from loguru import logger
 
-from app.modules.applies.adapters.llm_base import SYSTEM_PROMPT, BaseLLMAdapter
+from app.modules.applies.adapters.llm.base import SYSTEM_PROMPT, BaseLLMAdapter
 from app.modules.applies.models import Message
 
 _API_URL = "https://api.groq.com/openai/v1/chat/completions"

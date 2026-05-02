@@ -65,16 +65,25 @@ modules/<domain>/
 │   └── ...
 │
 ├── ports/                                # typing.Protocol contracts (driven only)
-│   └── repository.py                     # 1 driven port per module preferred
+│   ├── <port_name>.py                    # one file per port group
+│   └── ...
 │
 ├── adapters/                             # driven adapters — the only impure layer
 │   ├── orm.py                            # SQLAlchemy tables (one Base shared via app/infra/db)
-│   ├── sqla_repository.py                # implements ports/repository.py
-│   └── <provider>.py                     # third-party integrations (apollo, theorg, ...)
+│   ├── <port_name>/                      # ★ adapter implementations grouped by port file
+│   │   ├── __init__.py                   #     re-exports concrete classes
+│   │   └── <implementation>.py           #     e.g. sqla.py, anthropic.py, apollo.py
+│   └── ...
 │
 └── services/                             # use cases — plain functions by default
     └── <use_case>.py                     # class only when state must persist between calls
 ```
+
+The `adapters/<port_name>/` grouping makes the relationship between contract
+(`ports/repository.py`) and implementations (`adapters/repository/sqla.py`,
+`adapters/repository/in_memory.py`, ...) explicit at the file-system level.
+Driven adapters that don't implement any port (the SQLAlchemy `orm.py`,
+provider-agnostic helpers) live flat under `adapters/`.
 
 | folder | what lives there | criterion |
 |---|---|---|
@@ -85,12 +94,12 @@ modules/<domain>/
 
 ### What each module owns
 
-| module | entities | ports | key adapters | services |
+| module | entities | ports | adapters layout | services |
 |---|---|---|---|---|
-| `companies` | Company, JobPosting | CompanySource | linkedin, remoteok, rustjobs, web3career; CompanyRow + JobPostingRow ORM | email_extract, job_enrich |
-| `people` | DecisionMaker, DecisionMakerRole | DecisionMakerSearch, ContactEnrichment | apollo, theorg, apify, email_guesser; DecisionMakerRow ORM | — |
-| `applies` | Apply, ApplyStatus, ApplyChannel, ApplyFlank, ApplyMethod | ApplyRepository, LLMGenerator | ApplyRow ORM, sqla_repository, llm_anthropic / llm_gemini / llm_groq | score, curate |
-| `automation` | ApplyOutcome, ApplyResult | — (driving module — orchestrates use-cases across other modules) | selenium_bot (Shadow-DOM walker), linkedin_easy_apply, linkedin_outreach, firefox_cookies, camoufox, api_server, llm_pool | selenium_orchestrator, send_orchestrator, easy_apply_orchestrator |
+| `companies` | Company, JobPosting | `ports/scraper.py` (CompanySource) | `adapters/orm.py`; `adapters/scraper/{linkedin,remoteok,rustjobs,web3career}.py` | email_extract, job_enrich |
+| `people` | DecisionMaker, DecisionMakerRole | `ports/search.py` (DecisionMakerSearch + ContactEnrichment) | `adapters/orm.py`; `adapters/search/{apollo,theorg,apify,email_guesser}.py` | — |
+| `applies` | Apply, ApplyStatus, ApplyChannel, ApplyFlank, ApplyMethod | `ports/repository.py` (ApplyRepository), `ports/llm.py` (LLMGenerator) | `adapters/orm.py`; `adapters/repository/sqla.py`; `adapters/llm/{anthropic,gemini,groq,base}.py` | score, curate |
+| `automation` | ApplyOutcome, ApplyResult | — (driving module — orchestrates use-cases across other modules) | `adapters/{selenium_bot,linkedin_easy_apply,linkedin_outreach,firefox_cookies,camoufox,api_server,llm_pool}.py` | selenium_orchestrator, send_orchestrator, easy_apply_orchestrator |
 
 ### Dependency rules
 

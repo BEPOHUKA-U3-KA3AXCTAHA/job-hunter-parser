@@ -20,16 +20,16 @@ SOURCES = ["remoteok", "web3", "linkedin", "rustjobs"]
 
 def _get_scraper(source: str, category: str = "rust"):
     if source == "remoteok":
-        from app.modules.companies.adapters.scrapers.remoteok import RemoteOKScraper
+        from app.modules.companies.adapters.scraper.remoteok import RemoteOKScraper
         return RemoteOKScraper()
     elif source == "web3":
-        from app.modules.companies.adapters.scrapers.web3career import Web3CareerScraper
+        from app.modules.companies.adapters.scraper.web3career import Web3CareerScraper
         return Web3CareerScraper(category=category)
     elif source == "linkedin":
-        from app.modules.companies.adapters.scrapers.linkedin import LinkedInScraper
+        from app.modules.companies.adapters.scraper.linkedin import LinkedInScraper
         return LinkedInScraper()
     elif source == "rustjobs":
-        from app.modules.companies.adapters.scrapers.rustjobs import RustJobsScraper
+        from app.modules.companies.adapters.scraper.rustjobs import RustJobsScraper
         return RustJobsScraper()
     else:
         console.print(f"[red]Unknown source:[/] {source}. Available: {', '.join(SOURCES)}")
@@ -220,7 +220,7 @@ def hunt(
     """
     from app.infra.config import get_secrets, load_app_config
     from app.modules.applies.models import MessageChannel
-    from app.modules.applies.adapters.sqla_repository import SqliteApplyRepository
+    from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
     from app.entrypoints.cli.pipeline import run_pipeline
     from app.shared import CandidateProfile, SearchCriteria
 
@@ -245,15 +245,15 @@ def hunt(
         # Job board scrapers. Web3.career rotates categories to widen the funnel.
         # RustJobs needs playwright; skip silently if not installed.
         sources = []
-        from app.modules.companies.adapters.scrapers.remoteok import RemoteOKScraper
-        from app.modules.companies.adapters.scrapers.linkedin import LinkedInScraper
-        from app.modules.companies.adapters.scrapers.web3career import Web3CareerScraper
+        from app.modules.companies.adapters.scraper.remoteok import RemoteOKScraper
+        from app.modules.companies.adapters.scraper.linkedin import LinkedInScraper
+        from app.modules.companies.adapters.scraper.web3career import Web3CareerScraper
         sources.append(RemoteOKScraper())
         sources.append(LinkedInScraper())
         for cat in ("rust", "python", "backend", "senior"):
             sources.append(Web3CareerScraper(category=cat))
         try:
-            from app.modules.companies.adapters.scrapers.rustjobs import RustJobsScraper
+            from app.modules.companies.adapters.scraper.rustjobs import RustJobsScraper
             sources.append(RustJobsScraper())
         except ImportError:
             console.print("[yellow]playwright not installed → skipping rustjobs[/]")
@@ -263,20 +263,20 @@ def hunt(
         enrichments = []
 
         # 1. TheOrg - always free, primary source
-        from app.modules.people.adapters.theorg import TheOrgScraper
+        from app.modules.people.adapters.search.theorg import TheOrgScraper
         theorg = TheOrgScraper()
         dm_searches.append(theorg)
         enrichments.append(theorg)
         console.print("[green]TheOrg adapter enabled (free)[/]")
 
         # 1b. Email pattern guesser - always on, free, runs after TheOrg per dm
-        from app.modules.people.adapters.email_guesser import EmailPatternGuesser
+        from app.modules.people.adapters.search.email_guesser import EmailPatternGuesser
         enrichments.append(EmailPatternGuesser())
         console.print("[green]Email pattern guesser enabled (free)[/]")
 
         # 2. Apollo - paid plan needed for API
         if secrets.apollo_api_key:
-            from app.modules.people.adapters.apollo import ApolloAdapter
+            from app.modules.people.adapters.search.apollo import ApolloAdapter
             apollo = ApolloAdapter(secrets.apollo_api_key)
             dm_searches.append(apollo)
             enrichments.append(apollo)
@@ -284,7 +284,7 @@ def hunt(
 
         # 3. Apify - $5-49 LinkedIn scraping
         if secrets.apify_api_key:
-            from app.modules.people.adapters.apify import ApifyAdapter
+            from app.modules.people.adapters.search.apify import ApifyAdapter
             apify = ApifyAdapter(secrets.apify_api_key)
             dm_searches.append(apify)
             enrichments.append(apify)
@@ -294,15 +294,15 @@ def hunt(
         # Gemini: 1500 req/day free.  Groq: 6000/day, very fast.  Anthropic: paid per token.
         llm = None
         if secrets.gemini_api_key:
-            from app.modules.applies.adapters.llm_gemini import GeminiLLMAdapter
+            from app.modules.applies.adapters.llm.gemini import GeminiLLMAdapter
             llm = GeminiLLMAdapter(secrets.gemini_api_key)
             console.print("[green]Gemini Flash message generation enabled (free tier)[/]")
         elif secrets.groq_api_key:
-            from app.modules.applies.adapters.llm_groq import GroqLLMAdapter
+            from app.modules.applies.adapters.llm.groq import GroqLLMAdapter
             llm = GroqLLMAdapter(secrets.groq_api_key)
             console.print("[green]Groq Llama-3.3-70B message generation enabled (free tier)[/]")
         elif secrets.anthropic_api_key:
-            from app.modules.applies.adapters.llm_anthropic import ClaudeLLMAdapter
+            from app.modules.applies.adapters.llm.anthropic import ClaudeLLMAdapter
             llm = ClaudeLLMAdapter(secrets.anthropic_api_key)
             console.print("[green]Claude message generation enabled (paid)[/]")
         else:
@@ -649,7 +649,7 @@ def retry(
     from app.infra.db import get_session_maker
     from app.modules.applies.adapters.orm import ApplyRow
     from app.infra.db import init_db
-    from app.modules.applies.adapters.sqla_repository import SqliteApplyRepository
+    from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
 
     async def _run():
         await init_db()
@@ -695,7 +695,7 @@ def curate(
     from app.infra.db import get_session_maker
     from app.infra.db import init_db
     from app.modules.applies.models import Message, MessageChannel, MessageStatus
-    from app.modules.applies.adapters.sqla_repository import _upsert_message
+    from app.modules.applies.adapters.repository.sqla import _upsert_message
     from app.shared import CandidateProfile
 
     async def _run():
@@ -770,13 +770,13 @@ def curate(
             return
 
         if secrets.gemini_api_key:
-            from app.modules.applies.adapters.llm_gemini import GeminiLLMAdapter
+            from app.modules.applies.adapters.llm.gemini import GeminiLLMAdapter
             llm = GeminiLLMAdapter(secrets.gemini_api_key)
         elif secrets.groq_api_key:
-            from app.modules.applies.adapters.llm_groq import GroqLLMAdapter
+            from app.modules.applies.adapters.llm.groq import GroqLLMAdapter
             llm = GroqLLMAdapter(secrets.groq_api_key)
         else:
-            from app.modules.applies.adapters.llm_anthropic import ClaudeLLMAdapter
+            from app.modules.applies.adapters.llm.anthropic import ClaudeLLMAdapter
             llm = ClaudeLLMAdapter(secrets.anthropic_api_key)
         console.print(f"[green]LLM: {llm.__class__.__name__} ({llm.model_name})[/]")
 
