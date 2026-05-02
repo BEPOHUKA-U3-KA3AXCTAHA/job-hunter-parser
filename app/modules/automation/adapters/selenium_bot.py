@@ -851,8 +851,26 @@ async def _autofill_via_llm(driver, page_idx: int, job_tag: str) -> int:
     return n
 
 
-def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResult:
+def _run_async(coro):
+    """Run an async coroutine from sync code, even if a loop is already running.
+
+    apply_to_job/_walk_modal are sync (Selenium driver is sync) but they need
+    to call the async LLM autofill. When invoked from a CLI command that
+    itself is wrapped in asyncio.run(), a plain asyncio.run() inside would
+    raise 'cannot be called from a running event loop'. Detect and run in a
+    thread.
+    """
     import asyncio
+    import concurrent.futures
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(asyncio.run, coro).result()
+
+
+def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResult:
     last_was_review = False
     for page_idx in range(MAX_MODAL_PAGES):
         human_sleep(0.6, 1.4)
@@ -911,7 +929,7 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
                     "[p{}] {} unfilled required field(s) detected pre-Review — autofilling",
                     page_idx + 1, len(pre_qs),
                 )
-                asyncio.run(_autofill_via_llm(driver, page_idx, job_tag))
+                _run_async(_autofill_via_llm(driver, page_idx, job_tag))
                 human_sleep(0.5, 1.0)
             logger.info("Review at page {}", page_idx + 1)
             _diag_save(driver, f"{job_tag}_review_p{page_idx}")
@@ -934,7 +952,7 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
                         "[p{}] {} unfilled required field(s) detected pre-click — autofilling",
                         page_idx + 1, len(pre_qs),
                     )
-                    asyncio.run(_autofill_via_llm(driver, page_idx, job_tag))
+                    _run_async(_autofill_via_llm(driver, page_idx, job_tag))
                     human_sleep(0.5, 1.0)
                 logger.info("Continue/Next at page {}", page_idx + 1)
                 robust_click(driver, cont, "continue")
@@ -943,7 +961,7 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
             # Errors visible → autofill and retry once
             logger.info("Required fields at page {} — invoking LLM autofill", page_idx + 1)
             _diag_save(driver, f"{job_tag}_required_fields_p{page_idx}")
-            n_filled = asyncio.run(_autofill_via_llm(driver, page_idx, job_tag))
+            n_filled = _run_async(_autofill_via_llm(driver, page_idx, job_tag))
             human_sleep(0.5, 1.0)
             if n_filled and not has_modal_errors(driver):
                 logger.info("Autofill cleared errors, clicking Next at page {}", page_idx + 1)
