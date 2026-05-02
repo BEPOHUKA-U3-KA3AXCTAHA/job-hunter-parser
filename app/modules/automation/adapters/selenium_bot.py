@@ -514,10 +514,12 @@ def extract_unfilled_questions(driver) -> list[dict]:
                     if (seenCheckboxes.has(el)) continue;
                     const grp = checkboxGroup(el);
                     if (grp.length >= 2) {
-                        // single-choice checkbox group → treat like radio
+                        // single-choice checkbox group → treat like radio.
+                        // Don't require asterisk on Yes/No labels — the asterisk lives on
+                        // the question label one level up. If 2+ checkboxes share a parent
+                        // and none are checked, treat the group as a required choice.
                         for (const cb of grp) seenCheckboxes.add(cb);
                         if (grp.some(cb => cb.checked)) continue;
-                        if (!grp.some(cb => isRequired(cb))) continue;
                         const options = grp.map(cb => findLabel(cb) || cb.value || '');
                         // Group label: walk up from first cb to find the question text
                         let groupLabel = '';

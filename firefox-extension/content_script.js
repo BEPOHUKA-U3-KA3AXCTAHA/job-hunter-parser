@@ -425,10 +425,39 @@ function radioGroup(el) {
   return all.length ? all : [el];
 }
 
+function checkboxGroup(el) {
+  // LinkedIn renders single-choice "Yes/No" questions as 2+ checkboxes under
+  // one fieldset/div. Walk up to 5 ancestors looking for a parent that
+  // contains 2+ checkboxes — that's our group.
+  let p = el.parentElement;
+  for (let i = 0; i < 5 && p; i++) {
+    const sibs = p.querySelectorAll ? p.querySelectorAll("input[type='checkbox']") : [];
+    if (sibs.length >= 2) return Array.from(sibs);
+    p = p.parentElement;
+  }
+  return [el];
+}
+
+function checkboxGroupQuestionLabel(el, options) {
+  let p = el.parentElement;
+  for (let i = 0; i < 6 && p; i++) {
+    for (const child of (p.children || [])) {
+      const txt = (child.textContent || "").trim();
+      if (txt && txt.length < 300 && /\?|:|\*/.test(txt)
+          && !options.some(o => txt.includes(o))) {
+        return txt;
+      }
+    }
+    p = p.parentElement;
+  }
+  return "";
+}
+
 /** Walk the modal (Shadow DOM aware), collect unfilled required fields. */
 function extractUnfilledQuestions() {
   const out = [];
   const seenRadioNames = new Set();
+  const seenCheckboxes = new WeakSet();
   for (const el of deepNodes(document)) {
     if (!inAnyDialog(el)) continue;
     const tag = el.tagName;
@@ -437,6 +466,25 @@ function extractUnfilledQuestions() {
       const t = (el.type || "text").toLowerCase();
       if (["hidden", "submit", "button", "file"].includes(t)) continue;
       if (t === "checkbox") {
+        if (seenCheckboxes.has(el)) continue;
+        const grp = checkboxGroup(el);
+        if (grp.length >= 2) {
+          // single-choice checkbox group → treat like radio.
+          // Asterisk lives on the question label one level up — don't filter
+          // by isRequired() of individual Yes/No checkboxes.
+          for (const cb of grp) seenCheckboxes.add(cb);
+          if (grp.some(cb => cb.checked)) continue;
+          const options = grp.map(cb => findLabel(cb) || cb.value || "");
+          const groupLabel = checkboxGroupQuestionLabel(el, options) || "checkbox group";
+          out.push({
+            label: groupLabel, type: "radio", options,
+            name: el.name || "", placeholder: "", required: true,
+            _selector: cssPath(el),
+            _group_selectors: grp.map(cb => cssPath(cb)),
+          });
+          continue;
+        }
+        seenCheckboxes.add(el);
         if (el.checked || !isRequired(el)) continue;
         out.push({ label: findLabel(el), type: "checkbox", options: [], name: el.name || "", placeholder: "", required: true, _selector: cssPath(el) });
         continue;
@@ -509,7 +557,25 @@ function fillAnswers(qaPairs) {
         setNativeValue(el, answer);
         filled++;
       } else if (tag === "INPUT" && el.type === "checkbox") {
-        if (answer && answer.toLowerCase() !== "false" && answer !== "0") {
+        // Checkbox-group case: question.options + _group_selectors set
+        if (question.options && question.options.length > 1 && question._group_selectors) {
+          const root = el.getRootNode ? el.getRootNode() : document;
+          let matched = false;
+          for (const cbSel of question._group_selectors) {
+            const cb = findBySelector(cbSel);
+            if (!cb) continue;
+            let lblText = "";
+            const lbl = (cb.id && root.querySelector) ? root.querySelector("label[for='" + CSS.escape(cb.id) + "']") : null;
+            if (lbl) lblText = (lbl.textContent || "").trim();
+            if (lblText === answer || cb.value === answer) {
+              if (!cb.checked) cb.click();
+              filled++;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) log("checkbox group answer not matched:", answer, question.options);
+        } else if (answer && answer.toLowerCase() !== "false" && answer !== "0" && answer.toLowerCase() !== "no") {
           if (!el.checked) el.click();
           filled++;
         }
