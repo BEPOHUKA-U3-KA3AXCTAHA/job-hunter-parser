@@ -31,9 +31,9 @@ from app.modules.automation.adapters.selenium_bot import (
     selenium_firefox,
 )
 from app.infra.db import get_session_maker, init_db
-from app.infra.db.orm.applies import ApplyRow
-from app.infra.db.orm.companies import CompanyRow, JobPostingRow
-from app.infra.db.orm.people import DecisionMakerRow
+from app.infra.db.tables.applies import ApplyRow
+from app.infra.db.tables.companies import CompanyRow, JobPostingRow
+from app.infra.db.tables.people import DecisionMakerRow
 
 MAX_APPLIES_PER_DAY = 30
 MAX_APPLIES_PER_BATCH = 5

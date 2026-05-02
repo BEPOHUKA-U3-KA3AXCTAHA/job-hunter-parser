@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.infra.db.engine import Base
 
 if TYPE_CHECKING:
-    from app.infra.db.orm.people import DecisionMakerRow
+    from app.infra.db.tables.people import DecisionMakerRow
 
 
 class ApplyRow(Base):

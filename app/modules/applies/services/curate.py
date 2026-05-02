@@ -17,10 +17,10 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.infra.db import get_session_maker
-from app.infra.db.orm.applies import ApplyRow  # noqa: F401  (registers metadata via import)
-from app.infra.db.orm.companies import CompanyRow, JobPostingRow
+from app.infra.db.tables.applies import ApplyRow  # noqa: F401  (registers metadata via import)
+from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.modules.companies.models import Company, JobPosting
-from app.infra.db.orm.people import DecisionMakerRow
+from app.infra.db.tables.people import DecisionMakerRow
 from app.modules.people.models import DecisionMaker, DecisionMakerRole
 from app.shared import CandidateProfile, Seniority, TechStack
 

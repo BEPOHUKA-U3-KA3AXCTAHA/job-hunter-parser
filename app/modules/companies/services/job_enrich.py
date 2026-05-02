@@ -15,7 +15,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.infra.db import get_session_maker
-from app.infra.db.orm.companies import CompanyRow, JobPostingRow
+from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.modules.companies.services.email_extract import extract_apply_email
 
 _HEADERS = {

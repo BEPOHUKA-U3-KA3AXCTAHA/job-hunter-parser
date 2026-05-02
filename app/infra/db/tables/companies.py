@@ -1,7 +1,7 @@
-"""SQLAlchemy ORM tables for the companies domain (CompanyRow, JobPostingRow).
+"""SQLAlchemy tables for the companies domain (CompanyRow, JobPostingRow).
 
-Lives in infra/db/orm/ (not in modules/companies/adapters/) because the schema
-is shared infrastructure: foreign keys cross modules and the Alembic
+Lives in infra/db/tables/ (not in modules/companies/adapters/) because the
+schema is shared infrastructure: foreign keys cross modules and the Alembic
 autogenerate diff has to see one coherent metadata. Modules' repository
 adapters import these classes from here.
 """
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.infra.db.engine import Base
 
 if TYPE_CHECKING:
-    from app.infra.db.orm.people import DecisionMakerRow
+    from app.infra.db.tables.people import DecisionMakerRow
 
 
 class CompanyRow(Base):

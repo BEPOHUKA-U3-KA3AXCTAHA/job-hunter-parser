@@ -10,8 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.infra.db.engine import Base
 
 if TYPE_CHECKING:
-    from app.infra.db.orm.applies import ApplyRow
-    from app.infra.db.orm.companies import CompanyRow
+    from app.infra.db.tables.applies import ApplyRow
+    from app.infra.db.tables.companies import CompanyRow
 
 
 class DecisionMakerRow(Base):

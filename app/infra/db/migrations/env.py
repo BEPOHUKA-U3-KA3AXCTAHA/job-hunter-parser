@@ -18,9 +18,9 @@ from app.infra.db import Base
 
 # Import every module's ORM module so its tables are registered with Base.metadata
 # before Alembic compares the model schema against the live DB.
-import app.infra.db.orm.applies  # noqa: F401  ApplyRow
-import app.infra.db.orm.companies  # noqa: F401  CompanyRow, JobPostingRow
-import app.infra.db.orm.people  # noqa: F401  DecisionMakerRow
+import app.infra.db.tables.applies  # noqa: F401  ApplyRow
+import app.infra.db.tables.companies  # noqa: F401  CompanyRow, JobPostingRow
+import app.infra.db.tables.people  # noqa: F401  DecisionMakerRow
 
 config = context.config
 
