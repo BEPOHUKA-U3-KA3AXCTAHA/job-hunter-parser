@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "JHP Easy Apply",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Auto-apply LinkedIn Easy Apply jobs from Job Hunter Parser queue. Runs inside your real Firefox so LinkedIn sees your normal session.",
   "browser_specific_settings": {
     "gecko": {

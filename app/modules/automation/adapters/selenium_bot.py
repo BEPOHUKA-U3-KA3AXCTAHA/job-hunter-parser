@@ -388,6 +388,254 @@ def dump_buttons(driver, limit: int = 12) -> list[dict]:
         return []
 
 
+def extract_unfilled_questions(driver) -> list[dict]:
+    """Walk the modal (Shadow-DOM aware) and return a list of unfilled fields.
+
+    Each returned dict matches `FormQuestion` shape:
+        {label, type, options, name, placeholder, required, _selector}
+    `_selector` is an opaque CSS path the JS side uses to fill the answer back.
+    """
+    js = JS_WALK_PROLOG + """
+        function nthOf(el) {
+            const p = el.parentNode; if (!p) return 1;
+            let i = 1;
+            for (const c of p.children) {
+                if (c === el) return i;
+                if (c.tagName === el.tagName) i++;
+            }
+            return 1;
+        }
+        function cssPath(el) {
+            // Best-effort path that a fillAnswers() walker can resolve later.
+            // We tag with id when present, otherwise tag+nthOfType chain up to dialog ancestor.
+            if (el.id) return '#' + CSS.escape(el.id);
+            const parts = [];
+            let cur = el;
+            while (cur && cur.tagName) {
+                if (cur.id) { parts.unshift('#' + CSS.escape(cur.id)); break; }
+                parts.unshift(cur.tagName.toLowerCase() + ':nth-of-type(' + nthOf(cur) + ')');
+                cur = cur.parentElement;
+                if (parts.length > 8) break;
+            }
+            return parts.join(' > ');
+        }
+        function findLabel(el) {
+            const root = el.getRootNode ? el.getRootNode() : document;
+            // Strategy 1: <label for="id">
+            if (el.id && root.querySelector) {
+                const l = root.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+                if (l) return (l.textContent || '').trim();
+            }
+            // Strategy 2: aria-labelledby
+            const labelledBy = el.getAttribute('aria-labelledby');
+            if (labelledBy && root.getElementById) {
+                const l = root.getElementById(labelledBy);
+                if (l) return (l.textContent || '').trim();
+            }
+            // Strategy 3: ancestor <label>
+            let p = el.parentNode;
+            for (let i = 0; i < 5 && p; i++) {
+                if (p.tagName === 'LABEL') return (p.textContent || '').trim();
+                p = p.parentNode;
+            }
+            // Strategy 4: previous sibling text (common for select/radio groups)
+            p = el.parentNode;
+            for (let i = 0; i < 4 && p; i++) {
+                // Look for a label-like sibling at this level
+                for (const sib of (p.children || [])) {
+                    if (sib === el) break;
+                    if (/^(LABEL|LEGEND|SPAN|DIV|H[1-6]|P)$/.test(sib.tagName)) {
+                        const t = (sib.textContent || '').trim();
+                        if (t && t.length < 200 && /\\?|:|\\*/.test(t)) return t;
+                    }
+                }
+                p = p.parentNode;
+            }
+            return el.placeholder || el.name || el.getAttribute('aria-label') || '';
+        }
+        function isRequired(el) {
+            if (el.required) return true;
+            if (el.getAttribute('aria-required') === 'true') return true;
+            const lbl = findLabel(el);
+            return /\\*\\s*$/.test(lbl) || /\\*\\s*\\(/.test(lbl);
+        }
+        function isInDialog(el) {
+            let p = el;
+            while (p) {
+                if (p.getAttribute && p.getAttribute('role') === 'dialog') return true;
+                p = p.parentNode || p.host;
+            }
+            return false;
+        }
+        function radioGroup(el) {
+            // For radios, gather sibling radios with the same name.
+            const root = el.getRootNode ? el.getRootNode() : document;
+            const name = el.name;
+            if (!name) return [el];
+            const all = [];
+            for (const r of (root.querySelectorAll ? root.querySelectorAll('input[type="radio"]') : [])) {
+                if (r.name === name) all.push(r);
+            }
+            return all.length ? all : [el];
+        }
+
+        const out = [];
+        const seenRadioNames = new Set();
+        for (const el of deepNodes(document)) {
+            if (!isInDialog(el)) continue;
+            const tag = el.tagName;
+
+            if (tag === 'INPUT') {
+                const t = (el.type || 'text').toLowerCase();
+                if (['hidden', 'submit', 'button', 'file'].includes(t)) continue;
+                if (t === 'checkbox') {
+                    if (el.checked) continue;
+                    if (!isRequired(el)) continue;
+                    out.push({
+                        label: findLabel(el), type: 'checkbox', options: [],
+                        name: el.name || '', placeholder: '', required: true,
+                        _selector: cssPath(el),
+                    });
+                    continue;
+                }
+                if (t === 'radio') {
+                    if (seenRadioNames.has(el.name)) continue;
+                    const grp = radioGroup(el);
+                    if (grp.some(r => r.checked)) { seenRadioNames.add(el.name); continue; }
+                    if (!grp.some(r => isRequired(r))) continue;
+                    seenRadioNames.add(el.name);
+                    const options = grp.map(r => {
+                        const lbl = findLabel(r);
+                        return lbl || r.value || '';
+                    });
+                    out.push({
+                        label: findLabel(grp[0]).replace(/\\s+\\S+\\s*$/, '').trim() || el.name,
+                        type: 'radio', options,
+                        name: el.name || '', placeholder: '', required: true,
+                        _selector: cssPath(el),
+                    });
+                    continue;
+                }
+                // text/number/tel/email
+                if (el.value && el.value.trim()) continue;
+                if (!isRequired(el)) continue;
+                out.push({
+                    label: findLabel(el), type: t || 'text', options: [],
+                    name: el.name || el.id || '', placeholder: el.placeholder || '',
+                    required: true, _selector: cssPath(el),
+                });
+            } else if (tag === 'TEXTAREA') {
+                if (el.value && el.value.trim()) continue;
+                if (!isRequired(el)) continue;
+                out.push({
+                    label: findLabel(el), type: 'textarea', options: [],
+                    name: el.name || el.id || '', placeholder: el.placeholder || '',
+                    required: true, _selector: cssPath(el),
+                });
+            } else if (tag === 'SELECT') {
+                const cur = (el.value || '').trim();
+                const opts = Array.from(el.options || []).map(o => o.text.trim()).filter(Boolean);
+                // 'Select an option' placeholder is unfilled
+                if (cur && !/^select|^choose|^please/i.test(cur)) continue;
+                if (!isRequired(el) && opts.length === 0) continue;
+                out.push({
+                    label: findLabel(el), type: 'select',
+                    options: opts.filter(o => !/^select|^choose|^please/i.test(o)),
+                    name: el.name || el.id || '', placeholder: '', required: isRequired(el),
+                    _selector: cssPath(el),
+                });
+            }
+        }
+        return out;
+    """
+    try:
+        return driver.execute_script(js) or []
+    except Exception as e:
+        logger.warning("extract_unfilled_questions failed: {}", e)
+        return []
+
+
+def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
+    """Fill each (question, answer) pair into the modal via JS. Returns count filled."""
+    if not qa_pairs:
+        return 0
+    js = JS_WALK_PROLOG + """
+        const pairs = arguments[0];
+        function findBySelector(sel) {
+            // Try shadow-aware lookup: walk every shadow root with querySelector
+            for (const root of [document, ...Array.from(deepNodes(document))
+                    .filter(n => n.shadowRoot).map(n => n.shadowRoot)]) {
+                try {
+                    const el = root.querySelector(sel);
+                    if (el) return el;
+                } catch (e) {}
+            }
+            return null;
+        }
+        function setValue(el, val) {
+            const proto = Object.getPrototypeOf(el);
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) desc.set.call(el, val);
+            else el.value = val;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        let filled = 0;
+        for (const {question, answer} of pairs) {
+            if (!answer) continue;
+            const el = findBySelector(question._selector);
+            if (!el) continue;
+            const tag = el.tagName;
+            try {
+                if (tag === 'SELECT') {
+                    let matched = false;
+                    for (const o of el.options) {
+                        if (o.text.trim() === answer || o.value === answer) {
+                            el.value = o.value;
+                            matched = true; break;
+                        }
+                    }
+                    if (matched) {
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                        filled++;
+                    }
+                } else if (tag === 'TEXTAREA' || (tag === 'INPUT' && !['checkbox', 'radio'].includes((el.type || '').toLowerCase()))) {
+                    el.focus();
+                    setValue(el, answer);
+                    filled++;
+                } else if (tag === 'INPUT' && el.type === 'checkbox') {
+                    if (answer && answer.toLowerCase() !== 'false' && answer !== '0') {
+                        if (!el.checked) el.click();
+                        filled++;
+                    }
+                } else if (tag === 'INPUT' && el.type === 'radio') {
+                    // Find the radio in the same group whose label matches answer
+                    const root = el.getRootNode ? el.getRootNode() : document;
+                    const group = root.querySelectorAll ? root.querySelectorAll('input[type="radio"][name="' + CSS.escape(el.name) + '"]') : [el];
+                    for (const r of group) {
+                        let lblText = '';
+                        const lbl = (r.id && root.querySelector) ? root.querySelector('label[for="' + CSS.escape(r.id) + '"]') : null;
+                        if (lbl) lblText = (lbl.textContent || '').trim();
+                        if (lblText === answer || r.value === answer) {
+                            r.click();
+                            filled++;
+                            break;
+                        }
+                    }
+                }
+            } catch (e) { console.warn('[JHP] fill failed', e); }
+        }
+        return filled;
+    """
+    try:
+        return driver.execute_script(js, [
+            {"question": q, "answer": a} for q, a in qa_pairs
+        ]) or 0
+    except Exception as e:
+        logger.warning("fill_answers failed: {}", e)
+        return 0
+
+
 def has_modal_errors(driver) -> bool:
     """Check for visible inline error messages inside modal (red required-field warnings)."""
     js = JS_WALK_PROLOG + """
@@ -484,7 +732,40 @@ def apply_to_job(driver, job_url: str, profile_phone: str = "") -> ApplyResult:
     return ApplyResult(ApplyOutcome.NO_EASY_APPLY, detail=f"buttons={dump}")
 
 
+async def _autofill_via_llm(driver, page_idx: int, job_tag: str) -> int:
+    """Extract unfilled required fields, ask Claude for answers, fill them.
+    Returns count of successfully filled fields."""
+    from app.modules.applies.services.answer_questions import (
+        FormQuestion,
+        answer_questions,
+    )
+
+    raw_qs = extract_unfilled_questions(driver)
+    if not raw_qs:
+        return 0
+    logger.info("[p{}] {} unfilled required field(s) to autofill via LLM",
+                page_idx + 1, len(raw_qs))
+    questions = [
+        FormQuestion(
+            label=q["label"], type=q["type"], options=q.get("options") or [],
+            name=q.get("name", ""), placeholder=q.get("placeholder", ""),
+            required=q.get("required", True),
+        )
+        for q in raw_qs
+    ]
+    answers = await answer_questions(questions)
+    if not answers:
+        return 0
+    qa_pairs = [(raw_qs[i], answers[i].answer) for i in range(len(answers))]
+    n = fill_answers(driver, qa_pairs)
+    logger.info("[p{}] LLM filled {}/{} fields", page_idx + 1, n, len(answers))
+    if n:
+        _diag_save(driver, f"{job_tag}_after_autofill_p{page_idx}")
+    return n
+
+
 def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResult:
+    import asyncio
     for page_idx in range(MAX_MODAL_PAGES):
         human_sleep(0.6, 1.4)
         if is_blocked_page(driver):
@@ -528,19 +809,42 @@ def _walk_modal(driver, profile_phone: str, job_tag: str = "nojid") -> ApplyResu
         # Continue / Next?
         cont = find_button_by_text(driver, r"^(?:continue( to next step)?|next)$", timeout=1)
         if cont:
-            if has_modal_errors(driver):
-                logger.info("Unfilled required fields at page {}", page_idx + 1)
-                _diag_save(driver, f"{job_tag}_required_fields_p{page_idx}")
-                _close_modal(driver)
-                return ApplyResult(
-                    ApplyOutcome.TOO_MANY_QUESTIONS,
-                    detail=f"red errors at page {page_idx + 1}",
-                    pages=page_idx + 1,
-                )
-            logger.info("Continue/Next at page {}", page_idx + 1)
-            robust_click(driver, cont, "continue")
-            human_sleep(1, 2)
-            continue
+            # Try optimistic Next first — if no errors, page was already filled
+            if not has_modal_errors(driver):
+                # Also proactively scan for unfilled required fields BEFORE first Next
+                # (LinkedIn doesn't always paint red errors until after a click)
+                pre_qs = extract_unfilled_questions(driver)
+                if pre_qs:
+                    logger.info(
+                        "[p{}] {} unfilled required field(s) detected pre-click — autofilling",
+                        page_idx + 1, len(pre_qs),
+                    )
+                    asyncio.run(_autofill_via_llm(driver, page_idx, job_tag))
+                    human_sleep(0.5, 1.0)
+                logger.info("Continue/Next at page {}", page_idx + 1)
+                robust_click(driver, cont, "continue")
+                human_sleep(1, 2)
+                continue
+            # Errors visible → autofill and retry once
+            logger.info("Required fields at page {} — invoking LLM autofill", page_idx + 1)
+            _diag_save(driver, f"{job_tag}_required_fields_p{page_idx}")
+            n_filled = asyncio.run(_autofill_via_llm(driver, page_idx, job_tag))
+            human_sleep(0.5, 1.0)
+            if n_filled and not has_modal_errors(driver):
+                logger.info("Autofill cleared errors, clicking Next at page {}", page_idx + 1)
+                robust_click(driver, cont, "continue_after_autofill")
+                human_sleep(1, 2)
+                continue
+            logger.warning(
+                "Autofill insufficient (filled={}, errors={}) — bailing", n_filled, has_modal_errors(driver),
+            )
+            _diag_save(driver, f"{job_tag}_autofill_failed_p{page_idx}")
+            _close_modal(driver)
+            return ApplyResult(
+                ApplyOutcome.TOO_MANY_QUESTIONS,
+                detail=f"red errors persisted after LLM autofill at page {page_idx + 1}",
+                pages=page_idx + 1,
+            )
 
         # Nothing matches → bail with diagnostic
         dump = dump_buttons(driver, 8)

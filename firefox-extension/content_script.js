@@ -273,7 +273,7 @@ async function walkModal(profilePhone) {
     await sleep(600 + Math.random() * 800);
     if (isBlocked()) return { outcome: "blocked", detail: `page ${pageIdx}` };
 
-    // Phone fill
+    // Phone fill (LinkedIn often pre-fills, no-op if already there)
     await fillTextInputIfEmpty(/phone|mobile|tel/i, profilePhone);
 
     // Submit?
@@ -301,15 +301,33 @@ async function walkModal(profilePhone) {
     // Continue / Next?
     const cont = findClickable(/^(?:continue( to next step)?|next)$/i, { preferDialog: true });
     if (cont) {
-      if (hasModalErrors()) {
-        log(`Unfilled required at page ${pageIdx + 1}, closing`);
-        await closeModal();
-        return { outcome: "too_many_questions", detail: `red errors at page ${pageIdx + 1}`, pages: pageIdx + 1 };
+      // Proactive autofill BEFORE clicking Next — LinkedIn doesn't always paint
+      // red errors until after a click. Cheap if no unfilled fields exist.
+      if (!hasModalErrors()) {
+        const preQs = extractUnfilledQuestions();
+        if (preQs.length) {
+          log(`[p${pageIdx + 1}] ${preQs.length} pre-Next unfilled — autofilling`);
+          await autofillViaLLM();
+          await sleep(500 + Math.random() * 500);
+        }
+        log(`Continue/Next at page ${pageIdx + 1}`);
+        robustClick(cont, "continue");
+        await sleep(1200 + Math.random() * 800);
+        continue;
       }
-      log(`Continue/Next at page ${pageIdx + 1}`);
-      robustClick(cont, "continue");
-      await sleep(1200 + Math.random() * 800);
-      continue;
+      // Errors visible — autofill + retry once
+      log(`[p${pageIdx + 1}] required-field errors — invoking LLM autofill`);
+      const n = await autofillViaLLM();
+      await sleep(500 + Math.random() * 500);
+      if (n && !hasModalErrors()) {
+        log(`Autofill cleared errors, clicking Next at page ${pageIdx + 1}`);
+        robustClick(cont, "continue_after_autofill");
+        await sleep(1200 + Math.random() * 800);
+        continue;
+      }
+      log(`Autofill insufficient (filled=${n}, errors=${hasModalErrors()}) — bailing`);
+      await closeModal();
+      return { outcome: "too_many_questions", detail: `red errors persisted after autofill at page ${pageIdx + 1}`, pages: pageIdx + 1 };
     }
 
     log(`No nav button at page ${pageIdx + 1}`, dumpClickables(8));
@@ -331,6 +349,232 @@ async function closeModal() {
       await sleep(500);
     }
   }
+}
+
+// --- LLM-backed autofill for ATS additional-questions ---
+
+const API_BASE = "http://localhost:8765";
+
+function nthOfType(el) {
+  const p = el.parentNode; if (!p) return 1;
+  let i = 1;
+  for (const c of p.children) {
+    if (c === el) return i;
+    if (c.tagName === el.tagName) i++;
+  }
+  return 1;
+}
+
+function cssPath(el) {
+  if (el.id) return "#" + CSS.escape(el.id);
+  const parts = [];
+  let cur = el;
+  while (cur && cur.tagName) {
+    if (cur.id) { parts.unshift("#" + CSS.escape(cur.id)); break; }
+    parts.unshift(cur.tagName.toLowerCase() + ":nth-of-type(" + nthOfType(cur) + ")");
+    cur = cur.parentElement;
+    if (parts.length > 8) break;
+  }
+  return parts.join(" > ");
+}
+
+function findLabel(el) {
+  const root = el.getRootNode ? el.getRootNode() : document;
+  if (el.id && root.querySelector) {
+    const l = root.querySelector("label[for='" + CSS.escape(el.id) + "']");
+    if (l) return (l.textContent || "").trim();
+  }
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy && root.getElementById) {
+    const l = root.getElementById(labelledBy);
+    if (l) return (l.textContent || "").trim();
+  }
+  let p = el.parentNode;
+  for (let i = 0; i < 5 && p; i++) {
+    if (p.tagName === "LABEL") return (p.textContent || "").trim();
+    p = p.parentNode;
+  }
+  p = el.parentNode;
+  for (let i = 0; i < 4 && p; i++) {
+    for (const sib of (p.children || [])) {
+      if (sib === el) break;
+      if (/^(LABEL|LEGEND|SPAN|DIV|H[1-6]|P)$/.test(sib.tagName)) {
+        const t = (sib.textContent || "").trim();
+        if (t && t.length < 200 && /\?|:|\*/.test(t)) return t;
+      }
+    }
+    p = p.parentNode;
+  }
+  return el.placeholder || el.name || el.getAttribute("aria-label") || "";
+}
+
+function isRequired(el) {
+  if (el.required) return true;
+  if (el.getAttribute("aria-required") === "true") return true;
+  const lbl = findLabel(el);
+  return /\*\s*$/.test(lbl) || /\*\s*\(/.test(lbl);
+}
+
+function radioGroup(el) {
+  const root = el.getRootNode ? el.getRootNode() : document;
+  if (!el.name) return [el];
+  const all = [];
+  for (const r of (root.querySelectorAll ? root.querySelectorAll("input[type='radio']") : [])) {
+    if (r.name === el.name) all.push(r);
+  }
+  return all.length ? all : [el];
+}
+
+/** Walk the modal (Shadow DOM aware), collect unfilled required fields. */
+function extractUnfilledQuestions() {
+  const out = [];
+  const seenRadioNames = new Set();
+  for (const el of deepNodes(document)) {
+    if (!inAnyDialog(el)) continue;
+    const tag = el.tagName;
+
+    if (tag === "INPUT") {
+      const t = (el.type || "text").toLowerCase();
+      if (["hidden", "submit", "button", "file"].includes(t)) continue;
+      if (t === "checkbox") {
+        if (el.checked || !isRequired(el)) continue;
+        out.push({ label: findLabel(el), type: "checkbox", options: [], name: el.name || "", placeholder: "", required: true, _selector: cssPath(el) });
+        continue;
+      }
+      if (t === "radio") {
+        if (seenRadioNames.has(el.name)) continue;
+        const grp = radioGroup(el);
+        if (grp.some(r => r.checked)) { seenRadioNames.add(el.name); continue; }
+        if (!grp.some(r => isRequired(r))) continue;
+        seenRadioNames.add(el.name);
+        const options = grp.map(r => findLabel(r) || r.value || "");
+        out.push({ label: (findLabel(grp[0]) || el.name).replace(/\s+\S+\s*$/, "").trim(), type: "radio", options, name: el.name || "", placeholder: "", required: true, _selector: cssPath(el) });
+        continue;
+      }
+      if (el.value && el.value.trim()) continue;
+      if (!isRequired(el)) continue;
+      out.push({ label: findLabel(el), type: t || "text", options: [], name: el.name || el.id || "", placeholder: el.placeholder || "", required: true, _selector: cssPath(el) });
+    } else if (tag === "TEXTAREA") {
+      if (el.value && el.value.trim()) continue;
+      if (!isRequired(el)) continue;
+      out.push({ label: findLabel(el), type: "textarea", options: [], name: el.name || el.id || "", placeholder: el.placeholder || "", required: true, _selector: cssPath(el) });
+    } else if (tag === "SELECT") {
+      const cur = (el.value || "").trim();
+      const opts = Array.from(el.options || []).map(o => o.text.trim()).filter(Boolean);
+      if (cur && !/^select|^choose|^please/i.test(cur)) continue;
+      if (!isRequired(el) && opts.length === 0) continue;
+      out.push({ label: findLabel(el), type: "select", options: opts.filter(o => !/^select|^choose|^please/i.test(o)), name: el.name || el.id || "", placeholder: "", required: isRequired(el), _selector: cssPath(el) });
+    }
+  }
+  return out;
+}
+
+function findBySelector(sel) {
+  const roots = [document];
+  for (const n of deepNodes(document)) if (n.shadowRoot) roots.push(n.shadowRoot);
+  for (const root of roots) {
+    try { const el = root.querySelector(sel); if (el) return el; } catch (e) {}
+  }
+  return null;
+}
+
+function setNativeValue(el, val) {
+  const proto = Object.getPrototypeOf(el);
+  const desc = Object.getOwnPropertyDescriptor(proto, "value");
+  if (desc && desc.set) desc.set.call(el, val);
+  else el.value = val;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function fillAnswers(qaPairs) {
+  let filled = 0;
+  for (const { question, answer } of qaPairs) {
+    if (!answer) continue;
+    const el = findBySelector(question._selector);
+    if (!el) continue;
+    const tag = el.tagName;
+    try {
+      if (tag === "SELECT") {
+        for (const o of el.options) {
+          if (o.text.trim() === answer || o.value === answer) {
+            el.value = o.value;
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            filled++;
+            break;
+          }
+        }
+      } else if (tag === "TEXTAREA" || (tag === "INPUT" && !["checkbox", "radio"].includes((el.type || "").toLowerCase()))) {
+        el.focus();
+        setNativeValue(el, answer);
+        filled++;
+      } else if (tag === "INPUT" && el.type === "checkbox") {
+        if (answer && answer.toLowerCase() !== "false" && answer !== "0") {
+          if (!el.checked) el.click();
+          filled++;
+        }
+      } else if (tag === "INPUT" && el.type === "radio") {
+        const root = el.getRootNode ? el.getRootNode() : document;
+        const group = root.querySelectorAll ? root.querySelectorAll("input[type='radio'][name='" + CSS.escape(el.name) + "']") : [el];
+        for (const r of group) {
+          let lblText = "";
+          const lbl = (r.id && root.querySelector) ? root.querySelector("label[for='" + CSS.escape(r.id) + "']") : null;
+          if (lbl) lblText = (lbl.textContent || "").trim();
+          if (lblText === answer || r.value === answer) {
+            r.click();
+            filled++;
+            break;
+          }
+        }
+      }
+    } catch (e) { log("fill failed", e); }
+  }
+  return filled;
+}
+
+/** Extract unfilled required fields → POST to /answer-questions → fill. */
+async function autofillViaLLM() {
+  const questions = extractUnfilledQuestions();
+  if (!questions.length) return 0;
+  log("LLM autofill: " + questions.length + " unfilled required field(s)");
+
+  // Job context for the LLM prompt
+  const jobTitle = (document.querySelector("h1")?.textContent || "").trim().substring(0, 200);
+  const jobDescBlock = document.querySelector(".jobs-description__container, .description__text, [class*='description']");
+  const jobDescription = jobDescBlock ? (jobDescBlock.textContent || "").trim().substring(0, 3000) : "";
+  const companyEl = document.querySelector("a[href*='/company/']");
+  const companyName = companyEl ? (companyEl.textContent || "").trim().substring(0, 100) : "";
+
+  let resp;
+  try {
+    resp = await fetch(API_BASE + "/answer-questions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        questions: questions.map(({ _selector, ...rest }) => rest),
+        job_title: jobTitle,
+        job_description: jobDescription,
+        company_name: companyName,
+      }),
+    });
+  } catch (e) {
+    log("answer-questions request failed:", e.message);
+    return 0;
+  }
+  if (!resp.ok) {
+    log("answer-questions returned " + resp.status);
+    return 0;
+  }
+  const data = await resp.json();
+  const answers = data.answers || [];
+  if (answers.length !== questions.length) {
+    log("answer count mismatch: " + answers.length + " vs " + questions.length);
+    return 0;
+  }
+  const qaPairs = questions.map((q, i) => ({ question: q, answer: answers[i] }));
+  const filled = fillAnswers(qaPairs);
+  log("LLM filled " + filled + "/" + answers.length + " fields");
+  return filled;
 }
 
 // Listen for commands from background.js / popup.js

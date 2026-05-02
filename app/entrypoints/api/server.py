@@ -78,9 +78,67 @@ class ApplyResult(BaseModel):
     pages: Optional[int] = None
 
 
+class FormQuestionIn(BaseModel):
+    label: str
+    type: str = "text"
+    options: list[str] = []
+    name: str = ""
+    placeholder: str = ""
+    required: bool = True
+
+
+class AnswerQuestionsRequest(BaseModel):
+    questions: list[FormQuestionIn]
+    job_title: str = ""
+    job_description: str = ""
+    company_name: str = ""
+
+
+class AnswerQuestionsResponse(BaseModel):
+    answers: list[str]                     # same length + order as questions
+    confidence: list[float] = []
+    reasoning: list[str] = []
+
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True, "queue_size": len(state.queue), "in_flight": len(state.in_flight)}
+
+
+@app.post("/answer-questions", response_model=AnswerQuestionsResponse)
+async def answer_questions_endpoint(req: AnswerQuestionsRequest) -> AnswerQuestionsResponse:
+    """Used by the Firefox extension when it hits unfilled required fields.
+
+    Extension scrapes (label, type, options) for each unfilled field, posts
+    here, gets back answers in the same order, fills them in DOM, retries Next.
+    Returns empty answers list if the LLM call failed (missing API key, bad
+    JSON, etc) — caller should treat as "cannot auto-fill, bail to human".
+    """
+    from app.modules.applies.services.answer_questions import (
+        FormQuestion,
+        answer_questions,
+    )
+
+    qs = [
+        FormQuestion(
+            label=q.label, type=q.type, options=q.options,
+            name=q.name, placeholder=q.placeholder, required=q.required,
+        )
+        for q in req.questions
+    ]
+    answers = await answer_questions(
+        qs,
+        job_title=req.job_title,
+        job_description=req.job_description,
+        company_name=req.company_name,
+    )
+    if not answers:
+        return AnswerQuestionsResponse(answers=[""] * len(req.questions))
+    return AnswerQuestionsResponse(
+        answers=[a.answer for a in answers],
+        confidence=[a.confidence for a in answers],
+        reasoning=[a.reasoning for a in answers],
+    )
 
 
 @app.get("/next-job")
