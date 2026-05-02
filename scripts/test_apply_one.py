@@ -15,6 +15,8 @@ from app.modules.automation.adapters.selenium_bot import (
 
 def main(job_id: str = "4408058876"):
     url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+    logger.warning("⏰ Browser will open in 8s — switch to its workspace if needed")
+    time.sleep(8)
     with selenium_firefox(headless=False) as driver:
         # First just go to the job and probe
         driver.get(url)

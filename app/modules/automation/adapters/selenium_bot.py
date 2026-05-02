@@ -130,6 +130,14 @@ def selenium_firefox(headless: bool = False, copy_profile: bool = True):
     service = FirefoxService(log_output=str(Path("/tmp/jhp_geckodriver.log")))
     driver = webdriver.Firefox(options=options, service=service)
     driver.implicitly_wait(0)  # we'll handle waits explicitly
+    if not headless:
+        # Make the bot's Firefox impossible to miss when running alongside the
+        # user's own Firefox instance.
+        try:
+            driver.set_window_position(0, 0)
+            driver.set_window_size(1280, 900)
+        except Exception:
+            pass
     try:
         yield driver
     finally:
@@ -479,8 +487,22 @@ def extract_unfilled_questions(driver) -> list[dict]:
             return all.length ? all : [el];
         }
 
+        function checkboxGroup(el) {
+            // Find sibling checkboxes that share a near common ancestor (within 5 levels).
+            // LinkedIn renders Yes/No questions as 2+ checkboxes under one fieldset/div.
+            const root = el.getRootNode ? el.getRootNode() : document;
+            let p = el.parentElement;
+            for (let i = 0; i < 5 && p; i++) {
+                const sibs = p.querySelectorAll ? p.querySelectorAll('input[type="checkbox"]') : [];
+                if (sibs.length >= 2) return Array.from(sibs);
+                p = p.parentElement;
+            }
+            return [el];
+        }
+
         const out = [];
         const seenRadioNames = new Set();
+        const seenCheckboxes = new Set();
         for (const el of deepNodes(document)) {
             if (!isInDialog(el)) continue;
             const tag = el.tagName;
@@ -489,6 +511,38 @@ def extract_unfilled_questions(driver) -> list[dict]:
                 const t = (el.type || 'text').toLowerCase();
                 if (['hidden', 'submit', 'button', 'file'].includes(t)) continue;
                 if (t === 'checkbox') {
+                    if (seenCheckboxes.has(el)) continue;
+                    const grp = checkboxGroup(el);
+                    if (grp.length >= 2) {
+                        // single-choice checkbox group → treat like radio
+                        for (const cb of grp) seenCheckboxes.add(cb);
+                        if (grp.some(cb => cb.checked)) continue;
+                        if (!grp.some(cb => isRequired(cb))) continue;
+                        const options = grp.map(cb => findLabel(cb) || cb.value || '');
+                        // Group label: walk up from first cb to find the question text
+                        let groupLabel = '';
+                        let p2 = el.parentElement;
+                        for (let i = 0; i < 6 && p2 && !groupLabel; i++) {
+                            for (const child of (p2.children || [])) {
+                                const txt = (child.textContent || '').trim();
+                                if (txt && txt.length < 300 && /\\?|:|\\*/.test(txt)
+                                    && !options.some(o => txt.includes(o))) {
+                                    groupLabel = txt;
+                                    break;
+                                }
+                            }
+                            p2 = p2.parentElement;
+                        }
+                        out.push({
+                            label: groupLabel || 'checkbox group',
+                            type: 'radio', options,
+                            name: el.name || '', placeholder: '', required: true,
+                            _selector: cssPath(el),
+                            _group_selectors: grp.map(cb => cssPath(cb)),
+                        });
+                        continue;
+                    }
+                    seenCheckboxes.add(el);
                     if (el.checked) continue;
                     if (!isRequired(el)) continue;
                     out.push({
@@ -604,9 +658,35 @@ def fill_answers(driver, qa_pairs: list[tuple[dict, str]]) -> int:
                     setValue(el, answer);
                     filled++;
                 } else if (tag === 'INPUT' && el.type === 'checkbox') {
-                    if (answer && answer.toLowerCase() !== 'false' && answer !== '0') {
-                        if (!el.checked) el.click();
-                        filled++;
+                    // Group case: question.options has multiple labels, answer = one of them
+                    if (question.options && question.options.length > 1 && question._group_selectors) {
+                        const root = el.getRootNode ? el.getRootNode() : document;
+                        let matched = false;
+                        for (const cbSel of question._group_selectors) {
+                            const cb = (function() {
+                                for (const r of [document, ...Array.from(deepNodes(document)).filter(n => n.shadowRoot).map(n => n.shadowRoot)]) {
+                                    try { const x = r.querySelector(cbSel); if (x) return x; } catch (e) {}
+                                }
+                                return null;
+                            })();
+                            if (!cb) continue;
+                            let lblText = '';
+                            const lbl = (cb.id && root.querySelector) ? root.querySelector('label[for="' + CSS.escape(cb.id) + '"]') : null;
+                            if (lbl) lblText = (lbl.textContent || '').trim();
+                            if (lblText === answer || cb.value === answer) {
+                                if (!cb.checked) cb.click();
+                                filled++;
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (!matched) console.warn('[JHP] checkbox group answer not matched:', answer, question.options);
+                    } else {
+                        // Single checkbox: truthy answer = check it
+                        if (answer && answer.toLowerCase() !== 'false' && answer !== '0' && answer.toLowerCase() !== 'no') {
+                            if (!el.checked) el.click();
+                            filled++;
+                        }
                     }
                 } else if (tag === 'INPUT' && el.type === 'radio') {
                     // Find the radio in the same group whose label matches answer
