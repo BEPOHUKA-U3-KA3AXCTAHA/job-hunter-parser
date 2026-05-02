@@ -92,18 +92,215 @@ def _prepare_profile_copy() -> Path:
             "shader-cache", "AlternateServices.bin",
         ),
     )
-    # Make sure user.js doesn't disable cookies
+    # Make sure user.js doesn't disable cookies. Plus a pile of anti-bot-
+    # detection prefs so Cloudflare Turnstile / hCaptcha don't flag us as
+    # webdriver-controlled (they look at navigator.webdriver, missing
+    # plugins, marionette markers, language list shape, etc.).
     user_js = PROFILE_COPY_DIR / "user.js"
     user_js.write_text(
-        # Disable Firefox automation banners and any "this profile is opened by another Firefox" check
         'user_pref("datareporting.healthreport.uploadEnabled", false);\n'
         'user_pref("dom.disable_open_during_load", false);\n'
+        # Hide all automation markers from the JS-visible navigator surface
         'user_pref("dom.webdriver.enabled", false);\n'
         'user_pref("useAutomationExtension", false);\n'
+        'user_pref("marionette.contentListener", false);\n'
+        # Cloudflare reads these — make them look like a normal user profile
+        'user_pref("privacy.resistFingerprinting", false);\n'
+        'user_pref("privacy.trackingprotection.enabled", false);\n'
+        'user_pref("network.http.sendRefererHeader", 2);\n'
+        'user_pref("media.peerconnection.enabled", true);\n'
+        'user_pref("media.navigator.enabled", true);\n'
+        'user_pref("webgl.disabled", false);\n'
+        # Skip the first-run / what's-new pages that confuse session checks
         'user_pref("browser.startup.homepage_override.mstone", "ignore");\n'
         'user_pref("browser.startup.page", 0);\n'
+        'user_pref("browser.newtabpage.enabled", false);\n'
+        'user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);\n'
     )
     return PROFILE_COPY_DIR
+
+
+# JS injected via execute_script right after every navigate. Cloudflare's
+# bot-detector looks at these specific properties; setting them to mimic a
+# vanilla Firefox install gets us through Turnstile's invisible challenge.
+STEALTH_JS = """
+try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+} catch (e) {}
+try {
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [{name: 'PDF Viewer'}, {name: 'Chrome PDF Viewer'}, {name: 'Native Client'}],
+    });
+} catch (e) {}
+try {
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+} catch (e) {}
+try {
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+} catch (e) {}
+"""
+
+
+def stealth_navigate(driver, url: str) -> None:
+    """driver.get(url) but injects bot-detection countermeasures both before
+    AND after the load so the page's JS sees a vanilla browser fingerprint."""
+    try:
+        driver.execute_script(STEALTH_JS)
+    except Exception:
+        pass
+    driver.get(url)
+    try:
+        driver.execute_script(STEALTH_JS)
+    except Exception:
+        pass
+
+
+def has_cloudflare_challenge(driver) -> bool:
+    """Detect Turnstile / Cloudflare 'verify you are human' / hCaptcha
+    overlays that block submit. Returns True if any is visibly active.
+
+    Detection signals (any one fires):
+      - <input name="cf-turnstile-response"> with empty value (the form has
+        a Turnstile field but it hasn't been solved)
+      - <input data-testid="input-turnstile-required"> still empty
+      - <div id="turnstile-container"> / <div class="cf-turnstile">
+      - <iframe src*=turnstile|challenges.cloudflare|hcaptcha|recaptcha>
+      - 'verify you are human' / 'checking your browser' text
+    """
+    js = """
+        function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+            if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+            const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+        for (const el of dn(document)) {
+            // 1. Hidden Turnstile response input — set when Turnstile is
+            //    solved. Empty value = challenge still active.
+            if (el.tagName === 'INPUT') {
+                const name = (el.name || '').toLowerCase();
+                const tid = (el.getAttribute && el.getAttribute('data-testid') || '').toLowerCase();
+                if (name === 'cf-turnstile-response' || tid === 'input-turnstile-required') {
+                    if (!(el.value || '').trim()) return true;
+                }
+            }
+            // 2. Iframe-based widgets (loaded by Turnstile JS into container)
+            if (el.tagName === 'IFRAME') {
+                const src = (el.src || '').toLowerCase();
+                if (/turnstile|challenges\\.cloudflare|hcaptcha\\.com|recaptcha/i.test(src)) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width > 1 && r.height > 1) return true;
+                }
+            }
+            // 3. Turnstile / hCaptcha container by id or class
+            const id = (el.id || '').toLowerCase();
+            if (id === 'turnstile-container' || id.startsWith('cf-chl-widget')) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 1 && r.height > 1) return true;
+            }
+            const cls = (el.className && el.className.baseVal !== undefined) ?
+                el.className.baseVal : (typeof el.className === 'string' ? el.className : '');
+            if (cls && /\\bcf-turnstile\\b|\\bh-captcha\\b|\\bg-recaptcha\\b/i.test(cls)) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 1 && r.height > 1) return true;
+            }
+            // 4. Inline Cloudflare interstitial text
+            const txt = (el.textContent || '').slice(0, 200);
+            if (/checking your browser|verify (you are|that you are) human|just a moment|please complete the security check|i'?m not a robot/i.test(txt)) {
+                const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                if (r && r.width > 50 && r.height > 20) return true;
+            }
+        }
+        return false;
+    """
+    try:
+        return bool(driver.execute_script(js))
+    except Exception:
+        return False
+
+
+def solve_cloudflare_checkbox(driver, max_wait_s: int = 30) -> bool:
+    """Click the Turnstile checkbox via real OS-level mouse events.
+
+    Strategy:
+      1. Wait for the Turnstile iframe to load inside #turnstile-container
+         (Turnstile JS injects it asynchronously after page load).
+      2. Scroll the iframe into view.
+      3. Use ActionChains with offset-from-top-left to click the checkbox
+         (~30px in from the left edge of the iframe).
+      4. Re-check has_cloudflare_challenge — Turnstile sets the response
+         input value when solved, so the detection drops to False.
+
+    Returns True if challenge cleared, False if still present after the
+    wait window.
+    """
+    from selenium.webdriver.common.action_chains import ActionChains
+    import random
+
+    deadline = time.monotonic() + max_wait_s
+    last_click = 0.0
+    while time.monotonic() < deadline:
+        if not has_cloudflare_challenge(driver):
+            return True
+
+        # Find ANY visible Turnstile/Cloudflare iframe — including ones with
+        # blank src (Turnstile sometimes renders into a sandboxed iframe with
+        # only a `data-cf-*` attribute on the parent).
+        iframe = driver.execute_script(
+            """
+            // Prefer iframe inside the known Turnstile container.
+            const cont = document.querySelector('#turnstile-container');
+            if (cont) {
+                const ifr = cont.querySelector('iframe');
+                if (ifr) {
+                    const r = ifr.getBoundingClientRect();
+                    if (r.width > 1 && r.height > 1) return ifr;
+                }
+            }
+            // Fallback: any iframe whose src points at a challenge widget.
+            for (const ifr of document.querySelectorAll('iframe')) {
+                const src = (ifr.src || '').toLowerCase();
+                if (/turnstile|challenges\\.cloudflare|hcaptcha/i.test(src)) {
+                    const r = ifr.getBoundingClientRect();
+                    if (r.width > 1 && r.height > 1) return ifr;
+                }
+            }
+            return null;
+            """
+        )
+        if iframe and (time.monotonic() - last_click) > 3.0:
+            try:
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", iframe,
+                )
+                time.sleep(0.4)
+                # Use Selenium's iframe-aware offset click. The checkbox is
+                # ~30px from the iframe's left edge, vertically centered (~32
+                # for the standard 65px-tall Turnstile widget). Adding a small
+                # randomized jitter so the click point isn't perfectly
+                # pixel-perfect every time (humanlike).
+                offset_x = 30 + int(random.uniform(-3, 3))
+                offset_y = 32 + int(random.uniform(-3, 3))
+                actions = ActionChains(driver)
+                # move_to_element starts at element CENTER; we offset to
+                # checkbox position relative to that center.
+                size = iframe.size
+                cx_offset = -(size.get("width", 300) // 2) + offset_x
+                cy_offset = -(size.get("height", 65) // 2) + offset_y
+                actions.move_to_element_with_offset(iframe, cx_offset, cy_offset)
+                actions.pause(random.uniform(0.15, 0.35))
+                actions.click()
+                actions.perform()
+                last_click = time.monotonic()
+                logger.info(
+                    "cloudflare: clicked Turnstile checkbox via offset ({},{})",
+                    cx_offset, cy_offset,
+                )
+                time.sleep(3.0)
+                continue
+            except Exception as e:
+                logger.debug("cloudflare click attempt failed: {}", e)
+        time.sleep(0.6)
+    return not has_cloudflare_challenge(driver)
 
 
 @contextmanager
