@@ -4,15 +4,6 @@ Multi-channel job hunting automation: scrape job boards, find decision makers, g
 
 Built as a **modular monolith** with **hexagonal architecture inside each module** and **vertical slicing by business domain**.
 
-Choices that shape the layout:
-
-- **N bounded contexts** — separate modules for companies, people, applies, automation; each owns its entities, ports, adapters, services
-- **Declarative SQLAlchemy** (`mapped_column`, `relationship`) — one shared `Base` lives in `app/infra/db`, every module's `adapters/orm.py` extends it; cross-module FKs use string references so modules stay decoupled
-- **`typing.Protocol`** for ports — structural typing, no inheritance contract; adapters just match the shape
-- **No global DI container** — adapters are wired in the CLI command that needs them. The CLI is the composition root
-- **No Unit of Work / Domain Events / Message Bus** — out of scope for a single-user CLI; commits per session are enough
-- **CLI-only** — no HTTP / web layer; the only driving entrypoint is `app/entrypoints/cli/`
-
 ## Why
 
 Mass "Easy Apply" on LinkedIn has <0.5% conversion. Personalized direct outreach to decision makers (CTO, Head of Engineering, Founders) has 5-15%. This tool runs both flanks: automated apply for volume, hand-targeted DMs for conversion.
@@ -41,13 +32,8 @@ job-hunter-parser/
 │   │   │   ├── main.py                   # `jhp <command>` (registered in pyproject)
 │   │   │   ├── migrate.py                # Alembic wrapper — upgrade/revision/...
 │   │   │   └── pipeline.py               # one-shot scrape→enrich→curate orchestration
-│   │   └── api/                          # local FastAPI server + its only client
-│   │       ├── server.py                 # `python -m app.entrypoints.api.server`
-│   │       └── firefox_extension/        # WebExtension that talks to server.py
-│   │           ├── manifest.json
-│   │           ├── content_script.js
-│   │           ├── background.js
-│   │           └── popup.{html,js}
+│   │   └── api/                          # local FastAPI server (HTTP entrypoint)
+│   │       └── server.py                 # `python -m app.entrypoints.api.server`
 │   │
 │   ├── infra/                            # technical glue (no business logic)
 │   │   ├── config.py                     # Pydantic Settings + .env loader
