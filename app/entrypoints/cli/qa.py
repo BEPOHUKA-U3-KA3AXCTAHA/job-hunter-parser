@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from app.infra.db import get_session_maker
 from app.infra.db.tables.form_answers import FormAnswerRow
-from app.modules.applies.services.qa_cache import (
+from app.modules.applies.adapters.repository.qa_cache import (
     list_all,
     list_low_confidence,
     upsert_user_answer,

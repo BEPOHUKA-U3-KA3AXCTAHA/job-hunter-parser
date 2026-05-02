@@ -18,7 +18,7 @@ from typing import Literal
 from loguru import logger
 
 from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
-from app.modules.applies.services.qa_cache import get_cached, save_to_cache
+from app.modules.applies.ports.qa_cache import QACacheRepository
 from app.shared import CandidateProfile
 
 QuestionType = Literal["text", "number", "tel", "email", "textarea", "select", "radio", "checkbox"]
@@ -110,6 +110,13 @@ QUESTIONS TO ANSWER:
 """
 
 
+def _default_cache() -> QACacheRepository:
+    """Pick up the SQLA-backed cache lazily so importing this service doesn't
+    drag the ORM in at module-load time."""
+    from app.modules.applies.adapters.repository.qa_cache import SqlaQACacheRepository
+    return SqlaQACacheRepository()
+
+
 async def answer_questions(
     questions: list[FormQuestion],
     job_title: str = "",
@@ -117,22 +124,27 @@ async def answer_questions(
     company_name: str = "",
     profile: CandidateProfile | None = None,
     model: str = "claude-sonnet-4-6",
+    cache: QACacheRepository | None = None,
 ) -> list[FormAnswer]:
     """Ask Claude (via local `claude` CLI) to answer form questions, in order.
 
     Uses the user's Claude Max subscription via subprocess — no API key.
     Returns empty list if the CLI call failed — caller should treat as
     'cannot auto-fill, bail to the human'.
+
+    `cache` is the QACacheRepository port; defaults to SQLA-backed impl.
+    Injectable so callers can swap in an in-memory cache for tests.
     """
     if not questions:
         return []
 
     profile = profile or CandidateProfile()
+    cache = cache or _default_cache()
 
     # 1. Cache lookup — every question, in order. Hits replace the LLM round-trip.
     cached_answers: list[FormAnswer | None] = []
     for q in questions:
-        hit = await get_cached(q.label)
+        hit = await cache.get_cached(q.label)
         if hit:
             ans_text, source, conf = hit
             # If LLM-cached but the question has a closed option list and the
@@ -223,7 +235,7 @@ async def answer_questions(
 
         # Persist confident LLM answers — user can review/correct via `jhp qa review`
         if ans.answer and ans.confidence >= 0.6:
-            await save_to_cache(
+            await cache.save_to_cache(
                 q.label, ans.answer, q.options or None,
                 source="llm", confidence=ans.confidence,
                 company=company_name, job_title=job_title,
