@@ -30,9 +30,11 @@ class GenericHandler:
         time.sleep(2.5)
         host = urlparse(driver.current_url).netloc
 
-        # ATS landing pages often show only a job description + an "Apply now"
-        # button that takes you to the actual form. Click it if present.
-        for pat in [r"^apply now$", r"^apply for this job$", r"^apply$"]:
+        # ATS landing pages often show only a job description + an "Apply…"
+        # button that takes you to the actual form. Match any leading "Apply"
+        # word — covers "Apply", "Apply now", "Apply for this job",
+        # "Apply to role" (YC), "Apply here", etc.
+        for pat in [r"^\s*apply\b"]:
             if click_button_by_text(driver, pat, timeout=2):
                 logger.info("generic[{}]: clicked landing-page Apply", host)
                 time.sleep(2.5)
