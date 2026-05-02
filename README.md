@@ -145,8 +145,6 @@ from app.infra.db.tables.companies import CompanyRow
 from app.infra.db.tables.companies import CompanyRow   # leaks the schema into the domain
 ```
 
-Known violations (technical debt, not the desired state): `applies/services/curate.py`, `companies/services/job_enrich.py`, and the three `automation/services/*_orchestrator.py` files currently import Row classes directly. Each should grow a proper repository adapter and the service should depend on a port instead. Refactor pending.
-
 ### Browser automation: why Selenium + real Firefox profile
 
 LinkedIn aggressively detects automation. Earlier Camoufox (anti-detect Firefox) attempts were soft-blocked on `/jobs/view/`. Current stack lives in `app/modules/automation/`:

@@ -18,12 +18,11 @@ Hard guardrails:
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
 from loguru import logger
-from sqlalchemy import and_, select
 
+from app.modules.applies.ports.mass_apply import MassApplyRepository
 from app.modules.automation.adapters.camoufox import browser_session, human_sleep
 from app.modules.automation.adapters.linkedin_easy_apply import (
     ApplyOutcome,
@@ -32,14 +31,15 @@ from app.modules.automation.adapters.linkedin_easy_apply import (
     apply_to_job,
     is_blocked,
 )
-from app.infra.db import get_session_maker
-from app.infra.db.tables.applies import ApplyRow
-from app.infra.db.tables.companies import CompanyRow, JobPostingRow
-from app.infra.db.tables.people import DecisionMakerRow
 
 MAX_APPLIES_PER_DAY = 30
 MAX_APPLIES_PER_BATCH = 5
 MIN_GAP_S = 90
+
+
+def _default_repo() -> MassApplyRepository:
+    from app.modules.applies.adapters.repository.mass_apply import SqlaMassApplyRepository
+    return SqlaMassApplyRepository()
 
 
 def _build_search_url(keywords: str, remote_only: bool = True) -> str:
@@ -57,101 +57,21 @@ def _build_search_url(keywords: str, remote_only: bool = True) -> str:
     return base + "?" + "&".join(params)
 
 
-async def _count_applies_today() -> int:
-    Session = get_session_maker()
-    cutoff = datetime.utcnow() - timedelta(hours=24)
-    async with Session() as session:
-        result = await session.execute(
-            select(ApplyRow).where(
-                and_(
-                    ApplyRow.flank == "mass_apply",
-                    ApplyRow.sent_at.is_not(None),
-                    ApplyRow.sent_at >= cutoff,
-                )
-            )
-        )
-        return len(list(result.scalars()))
-
-
-async def _get_or_create_hiring_team_dm(session, company_name: str) -> "DecisionMakerRow":
-    """For mass_apply we don't have a real DM — use a synthetic 'Hiring Team' dm
-    keyed to the company. This keeps the (job, dm) tuple uniform across flanks."""
-    # Find or create the company
-    comp_q = await session.execute(select(CompanyRow).where(CompanyRow.name == company_name))
-    comp = comp_q.scalar_one_or_none()
-    if not comp:
-        comp = CompanyRow(name=company_name, source="linkedin_easy_apply", is_hiring=True)
-        session.add(comp)
-        await session.flush()
-    # Find or create the synthetic hiring DM
-    dm_q = await session.execute(
-        select(DecisionMakerRow).where(
-            and_(
-                DecisionMakerRow.company_id == comp.id,
-                DecisionMakerRow.full_name == "Hiring Team",
-            )
-        )
-    )
-    dm = dm_q.scalar_one_or_none()
-    if not dm:
-        dm = DecisionMakerRow(
-            company_id=comp.id,
-            full_name="Hiring Team",
-            role="hr",
-            contacts={"channel": "linkedin_easy_apply"},
-        )
-        session.add(dm)
-        await session.flush()
-    return dm, comp
-
-
 async def _record_apply(
-    company_name: str,
-    job_title: str,
-    job_url: str,
+    repo: MassApplyRepository,
+    company_name: str, job_title: str, job_url: str,
     result: ApplyResult,
 ) -> None:
-    """Save the apply attempt to the applies table."""
-    Session = get_session_maker()
-    async with Session() as session:
-        dm, comp = await _get_or_create_hiring_team_dm(session, company_name)
-        # Find or create the job posting
-        jp_q = await session.execute(
-            select(JobPostingRow).where(JobPostingRow.source_url == job_url)
-        )
-        jp = jp_q.scalar_one_or_none()
-        if not jp:
-            jp = JobPostingRow(
-                title=job_title,
-                company_id=comp.id,
-                source="linkedin_easy_apply",
-                source_url=job_url,
-                is_active=True,
-            )
-            session.add(jp)
-            await session.flush()
-
-        now = datetime.utcnow()
-        ap = ApplyRow(
-            job_posting_id=jp.id,
-            decision_maker_id=dm.id,
-            attempt_no=1,
-            flank="mass_apply",
-            method="auto_apply",
-            channel="ats_easy_apply",
-            relevance_score=50,
-            status="sent" if result.outcome == ApplyOutcome.APPLIED else "failed",
-            apply_url=job_url,
-            sent_at=now if result.outcome == ApplyOutcome.APPLIED else None,
-            generated_at=now,
-            notes=f"easy_apply: outcome={result.outcome.value} pages={result.pages_traversed} {result.detail}",
-        )
-        session.add(ap)
-        try:
-            await session.commit()
-        except Exception as e:
-            await session.rollback()
-            logger.debug("Apply already in DB (dupe) for {}: {}", job_url, e)
+    """Save the apply attempt via the MassApplyRepository port."""
+    success = result.outcome == ApplyOutcome.APPLIED
+    notes = (
+        f"easy_apply: outcome={result.outcome.value} "
+        f"pages={result.pages_traversed} {result.detail}"
+    )
+    await repo.upsert_mass_apply(
+        company_name=company_name, job_title=job_title, job_url=job_url,
+        channel="ats_easy_apply", success=success, notes=notes,
+    )
 
 
 async def _collect_job_urls(page, search_url: str, want: int) -> list[tuple[str, str, str]]:
@@ -197,10 +117,15 @@ async def run_easy_apply_batch(
     limit: int = 5,
     headless: bool = False,
     profile_phone: str = "",
+    repo: MassApplyRepository | None = None,
 ) -> dict:
-    """Main entry. Search → filter Easy Apply → apply with conservative pacing."""
+    """Main entry. Search → filter Easy Apply → apply with conservative pacing.
+
+    `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
+    """
     limit = min(limit, MAX_APPLIES_PER_BATCH)
-    today = await _count_applies_today()
+    repo = repo or _default_repo()
+    today = await repo.count_applies_today("mass_apply")
     if today >= MAX_APPLIES_PER_DAY:
         logger.warning("Daily cap reached: {}/{}", today, MAX_APPLIES_PER_DAY)
         return {"daily_cap_reached": True, "today": today}
@@ -223,7 +148,7 @@ async def run_easy_apply_batch(
             logger.info("[try {}/{}] {} @ {}", applied_count + 1, effective_limit, title[:50], comp[:30])
 
             result = await apply_to_job(page, job_url, profile_phone)
-            await _record_apply(comp, title, job_url, result)
+            await _record_apply(repo, comp, title, job_url, result)
 
             if result.outcome == ApplyOutcome.APPLIED:
                 stats["applied"] += 1

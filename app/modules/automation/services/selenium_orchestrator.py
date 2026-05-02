@@ -21,8 +21,9 @@ from urllib.parse import quote_plus
 
 import httpx
 from loguru import logger
-from sqlalchemy import and_, select
 
+from app.infra.db import init_db
+from app.modules.applies.ports.mass_apply import MassApplyRepository
 from app.modules.automation.adapters.selenium_bot import (
     ApplyOutcome,
     ApplyResult,
@@ -30,10 +31,12 @@ from app.modules.automation.adapters.selenium_bot import (
     human_sleep,
     selenium_firefox,
 )
-from app.infra.db import get_session_maker, init_db
-from app.infra.db.tables.applies import ApplyRow
-from app.infra.db.tables.companies import CompanyRow, JobPostingRow
-from app.infra.db.tables.people import DecisionMakerRow
+
+
+def _default_repo() -> MassApplyRepository:
+    """Lazy default — keeps the SQLA import out of module-load."""
+    from app.modules.applies.adapters.repository.mass_apply import SqlaMassApplyRepository
+    return SqlaMassApplyRepository()
 
 MAX_APPLIES_PER_DAY = 30
 MAX_APPLIES_PER_BATCH = 5
@@ -148,98 +151,16 @@ def _fetch_candidates_via_driver(driver, keywords_list: list[str], want: int = 2
     return out
 
 
-async def _count_applies_today() -> int:
-    Session = get_session_maker()
-    cutoff = datetime.utcnow() - timedelta(hours=24)
-    async with Session() as session:
-        result = await session.execute(
-            select(ApplyRow).where(
-                and_(
-                    ApplyRow.flank == "mass_apply",
-                    ApplyRow.sent_at.is_not(None),
-                    ApplyRow.sent_at >= cutoff,
-                )
-            )
-        )
-        return len(list(result.scalars()))
-
-
-async def _persist(company: str, title: str, url: str, result: ApplyResult) -> None:
-    Session = get_session_maker()
-    async with Session() as session:
-        # Company
-        comp_q = await session.execute(select(CompanyRow).where(CompanyRow.name == company))
-        comp = comp_q.scalar_one_or_none()
-        if not comp:
-            comp = CompanyRow(name=company, source="linkedin_easy_apply", is_hiring=True)
-            session.add(comp)
-            await session.flush()
-        # Synthetic Hiring Team DM
-        dm_q = await session.execute(
-            select(DecisionMakerRow).where(
-                and_(
-                    DecisionMakerRow.company_id == comp.id,
-                    DecisionMakerRow.full_name == "Hiring Team",
-                )
-            )
-        )
-        dm = dm_q.scalar_one_or_none()
-        if not dm:
-            dm = DecisionMakerRow(
-                company_id=comp.id, full_name="Hiring Team", role="hr",
-                contacts={"channel": "linkedin_easy_apply"},
-            )
-            session.add(dm)
-            await session.flush()
-        # Job posting
-        jp_q = await session.execute(select(JobPostingRow).where(JobPostingRow.source_url == url))
-        jp = jp_q.scalar_one_or_none()
-        if not jp:
-            jp = JobPostingRow(
-                title=title, company_id=comp.id,
-                source="linkedin_easy_apply", source_url=url, is_active=True,
-            )
-            session.add(jp)
-            await session.flush()
-        now = datetime.utcnow()
-        # Upsert — if (job, dm, attempt=1) exists, update; otherwise insert
-        existing_q = await session.execute(
-            select(ApplyRow).where(
-                and_(
-                    ApplyRow.job_posting_id == jp.id,
-                    ApplyRow.decision_maker_id == dm.id,
-                    ApplyRow.attempt_no == 1,
-                )
-            )
-        )
-        existing = existing_q.scalar_one_or_none()
-        success = result.outcome in (ApplyOutcome.APPLIED, ApplyOutcome.INTEREST_SIGNALED)
-        new_notes = f"selenium: outcome={result.outcome.value} pages={result.pages} {result.detail[:300]}"
-        if existing:
-            existing.status = "sent" if success else "failed"
-            existing.method = "auto_apply"
-            existing.channel = "ats_easy_apply"
-            existing.apply_url = url
-            if success and existing.sent_at is None:
-                existing.sent_at = now
-            existing.notes = (existing.notes or "") + " | " + new_notes
-        else:
-            ap = ApplyRow(
-                job_posting_id=jp.id, decision_maker_id=dm.id, attempt_no=1,
-                flank="mass_apply", method="auto_apply", channel="ats_easy_apply",
-                relevance_score=50,
-                status="sent" if success else "failed",
-                apply_url=url,
-                sent_at=now if success else None,
-                generated_at=now,
-                notes=new_notes,
-            )
-            session.add(ap)
-        try:
-            await session.commit()
-        except Exception as e:
-            await session.rollback()
-            logger.warning("persist failed: {}", e)
+async def _persist_outcome(
+    repo: MassApplyRepository,
+    company: str, title: str, url: str, result: ApplyResult,
+) -> None:
+    success = result.outcome in (ApplyOutcome.APPLIED, ApplyOutcome.INTEREST_SIGNALED)
+    notes = f"selenium: outcome={result.outcome.value} pages={result.pages} {result.detail[:300]}"
+    await repo.upsert_mass_apply(
+        company_name=company, job_title=title, job_url=url,
+        channel="ats_easy_apply", success=success, notes=notes,
+    )
 
 
 async def run_batch(
@@ -247,13 +168,18 @@ async def run_batch(
     limit: int = 1,
     headless: bool = True,
     profile_phone: str = "",
+    repo: MassApplyRepository | None = None,
 ) -> dict:
-    """Main entry. Search, filter, apply with conservative pacing."""
+    """Main entry. Search, filter, apply with conservative pacing.
+
+    `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
+    """
     keywords_list = keywords_list or ["rust senior remote", "python backend remote senior"]
     limit = min(limit, MAX_APPLIES_PER_BATCH)
+    repo = repo or _default_repo()
 
     await init_db()
-    today = await _count_applies_today()
+    today = await repo.count_applies_today("mass_apply")
     if today >= MAX_APPLIES_PER_DAY:
         return {"daily_cap_reached": True, "today": today}
     headroom = MAX_APPLIES_PER_DAY - today
@@ -286,7 +212,7 @@ async def run_batch(
 
             result = apply_to_job(driver, url, profile_phone)
             last_apply_at = time.monotonic()
-            await _persist(company, title, url, result)
+            await _persist_outcome(repo, company, title, url, result)
 
             if result.outcome == ApplyOutcome.APPLIED:
                 stats["applied"] += 1
