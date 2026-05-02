@@ -20,6 +20,7 @@ from app.infra.db import Base
 # before Alembic compares the model schema against the live DB.
 import app.infra.db.tables.applies  # noqa: F401  ApplyRow
 import app.infra.db.tables.companies  # noqa: F401  CompanyRow, JobPostingRow
+import app.infra.db.tables.form_answers  # noqa: F401  FormAnswerRow
 import app.infra.db.tables.people  # noqa: F401  DecisionMakerRow
 
 config = context.config
