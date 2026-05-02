@@ -172,7 +172,7 @@ cp .env.example .env
 # fill in ANTHROPIC_API_KEY, APOLLO_API_KEY, etc.
 
 docker-compose up -d  # optional — SQLite is the default
-alembic -c app/infra/db/alembic.ini upgrade head
+.venv/bin/python -m app.entrypoints.cli.migrate upgrade head
 
 jhp scrape yc --limit 100 --tech python --tech rust
 jhp enrich
@@ -182,15 +182,16 @@ jhp apply --keywords "rust senior remote" --limit 3 --no-headless
 
 ### Migrations
 
+Wrapper around Alembic that knows where `alembic.ini` lives, defaults
+`revision` to `--autogenerate`, and forwards everything else verbatim.
+
 ```bash
-# apply
-alembic -c app/infra/db/alembic.ini upgrade head
-
-# autogenerate a new revision after editing models
-alembic -c app/infra/db/alembic.ini revision --autogenerate -m "describe change"
-
-# rollback
-alembic -c app/infra/db/alembic.ini downgrade -1
+.venv/bin/python -m app.entrypoints.cli.migrate upgrade head        # apply
+.venv/bin/python -m app.entrypoints.cli.migrate revision -m "msg"   # autogen new revision
+.venv/bin/python -m app.entrypoints.cli.migrate current             # show current rev
+.venv/bin/python -m app.entrypoints.cli.migrate history             # full chain
+.venv/bin/python -m app.entrypoints.cli.migrate downgrade -1        # rollback one
+.venv/bin/python -m app.entrypoints.cli.migrate stamp head          # mark applied without running
 ```
 
 ## Roadmap
