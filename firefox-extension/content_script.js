@@ -14,7 +14,7 @@
 const log = (...args) => console.log("[JHP]", ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const MAX_MODAL_PAGES = 6;
+const MAX_MODAL_PAGES = 8;
 const RATE_LIMIT_MARKERS = [
   "let's confirm it's really you",
   "we've restricted your account",

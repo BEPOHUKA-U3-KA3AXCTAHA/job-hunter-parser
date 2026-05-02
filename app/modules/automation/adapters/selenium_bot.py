@@ -39,7 +39,7 @@ from app.modules.automation.adapters.firefox_cookies import find_default_profile
 PROFILE_COPY_DIR = Path("/tmp/jhp_ff_profile")
 DIAG_DIR = Path("/tmp/jhp_diag")
 
-MAX_MODAL_PAGES = 4
+MAX_MODAL_PAGES = 8
 RATE_LIMIT_MARKERS = [
     "let's confirm it's really you",
     "we've restricted your account",
