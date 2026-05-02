@@ -58,9 +58,12 @@ def _build_prompt(
     company_name: str,
     profile: CandidateProfile,
 ) -> str:
+    linkedin_url = f"https://www.linkedin.com/in/{profile.linkedin}/"
     profile_block = (
         f"Name: {profile.name}\n"
         f"Email: {profile.email}\n"
+        f"LinkedIn URL: {linkedin_url}\n"
+        f"Telegram: {profile.telegram}\n"
         f"Location: {profile.location}\n"
         f"Experience: {profile.experience_years}+ years\n"
         f"Tech stack: {', '.join(profile.tech_stack)}\n"
@@ -96,6 +99,7 @@ Rules:
 - For select/radio: pick exactly one option from the list, character-for-character.
 - For "Are you authorized to work in <country>?" / visa questions: candidate is in Montenegro, eligible for remote roles globally; if the role is in EU and a permit is required, answer "No" honestly. For Yes/No questions about remote work willingness — "Yes".
 - For "How did you hear about us?" — "LinkedIn".
+- For "LinkedIn", "LinkedIn URL", "LinkedIn profile" — answer with the LinkedIn URL listed above verbatim ({linkedin_url}). NEVER answer empty or "not provided" for LinkedIn fields.
 - For "Years of <tech>" — derive from the profile (Python: {profile.experience_years}, Rust: 3, Postgres: {profile.experience_years}, etc.). Default to {profile.experience_years} if unsure.
 - For "Why are you interested?" / cover-letter style: 2-3 sentences max, reference the company name and one job-description detail.
 - If a question has no good answer (e.g. asks for a US SSN, a US-only ID), answer "" and set confidence=0.
