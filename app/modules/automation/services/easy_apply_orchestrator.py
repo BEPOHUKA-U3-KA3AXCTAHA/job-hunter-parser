@@ -22,7 +22,6 @@ from urllib.parse import quote_plus
 
 from loguru import logger
 
-from app.modules.applies import MassApplyRepository
 from app.modules.automation.adapters.camoufox import browser_session, human_sleep
 from app.modules.automation.adapters.linkedin_easy_apply import (
     ApplyOutcome,
@@ -37,9 +36,9 @@ MAX_APPLIES_PER_BATCH = 5
 MIN_GAP_S = 90
 
 
-def _default_repo() -> MassApplyRepository:
-    from app.modules.applies import default_mass_apply_repo
-    return default_mass_apply_repo()
+def _default_uow_factory():
+    from app.modules.applies import default_uow
+    return default_uow
 
 
 def _build_search_url(keywords: str, remote_only: bool = True) -> str:
@@ -58,7 +57,7 @@ def _build_search_url(keywords: str, remote_only: bool = True) -> str:
 
 
 async def _record_apply(
-    repo: MassApplyRepository,
+    uow_factory,
     company_name: str, job_title: str, job_url: str,
     result: ApplyResult,
 ) -> None:
@@ -68,7 +67,9 @@ async def _record_apply(
         f"easy_apply: outcome={result.outcome.value} "
         f"pages={result.pages_traversed} {result.detail}"
     )
-    await repo.upsert_mass_apply(
+    async with uow_factory() as _uow:
+
+        await _uow.mass_apply.upsert_mass_apply(
         company_name=company_name, job_title=job_title, job_url=job_url,
         channel="ats_easy_apply", success=success, notes=notes,
     )
@@ -117,15 +118,17 @@ async def run_easy_apply_batch(
     limit: int = 5,
     headless: bool = False,
     profile_phone: str = "",
-    repo: MassApplyRepository | None = None,
+    uow_factory=None,
 ) -> dict:
     """Main entry. Search → filter Easy Apply → apply with conservative pacing.
 
     `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
     """
     limit = min(limit, MAX_APPLIES_PER_BATCH)
-    repo = repo or _default_repo()
-    today = await repo.count_applies_today("mass_apply")
+    uow_factory = uow_factory or _default_uow_factory()
+    async with uow_factory() as uow:
+
+        today = await uow.mass_apply.count_applies_today("mass_apply")
     if today >= MAX_APPLIES_PER_DAY:
         logger.warning("Daily cap reached: {}/{}", today, MAX_APPLIES_PER_DAY)
         return {"daily_cap_reached": True, "today": today}

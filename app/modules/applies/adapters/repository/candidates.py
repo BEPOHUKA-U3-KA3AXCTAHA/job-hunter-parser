@@ -7,8 +7,8 @@ table-blind.
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infra.db import get_session_maker
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.infra.db.tables.people import DecisionMakerRow
 from app.modules.applies.ports.candidates import CandidateBundle
@@ -84,27 +84,28 @@ def _dm_row_to_domain(dm: DecisionMakerRow) -> DecisionMaker:
 
 class SqlaCandidateBundleRepository:
     """Implements CandidateBundleRepository over SQLAlchemy."""
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
 
     async def load_active_bundles(self) -> list[CandidateBundle]:
         """Fetch every (job, company, dms-of-company) triple. Skips orphan jobs.
         Job ordering: posted_at desc (newest first, NULLs last).
         """
-        Session = get_session_maker()
-        async with Session() as session:
-            result = await session.execute(
-                select(JobPostingRow, CompanyRow)
-                .join(CompanyRow, CompanyRow.id == JobPostingRow.company_id)
-                .order_by(JobPostingRow.posted_at.desc().nullslast())
-            )
-            rows = result.all()
+        result = await session.execute(
+            select(JobPostingRow, CompanyRow)
+            .join(CompanyRow, CompanyRow.id == JobPostingRow.company_id)
+            .order_by(JobPostingRow.posted_at.desc().nullslast())
+        )
+        rows = result.all()
 
-            company_ids = {c.id for _, c in rows}
-            dm_result = await session.execute(
-                select(DecisionMakerRow).where(DecisionMakerRow.company_id.in_(company_ids))
-            )
-            dms_by_company: dict = {}
-            for dm in dm_result.scalars():
-                dms_by_company.setdefault(dm.company_id, []).append(dm)
+        company_ids = {c.id for _, c in rows}
+        dm_result = await session.execute(
+            select(DecisionMakerRow).where(DecisionMakerRow.company_id.in_(company_ids))
+        )
+        dms_by_company: dict = {}
+        for dm in dm_result.scalars():
+            dms_by_company.setdefault(dm.company_id, []).append(dm)
 
         out: list[CandidateBundle] = []
         for jp_row, comp_row in rows:

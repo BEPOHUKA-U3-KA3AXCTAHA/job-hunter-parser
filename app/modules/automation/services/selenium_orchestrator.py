@@ -22,8 +22,9 @@ from urllib.parse import quote_plus
 import httpx
 from loguru import logger
 
-from app.infra.db import init_db
-from app.modules.applies import MassApplyRepository
+# NOTE: schema migrations belong to the composition root (entrypoints/cli),
+# not to a service. Caller must ensure init_db() has been run.
+# UoW is invoked through uow_factory() at composition root; no direct port import needed.
 from app.modules.automation.adapters.selenium_bot import (
     ApplyOutcome,
     ApplyResult,
@@ -33,9 +34,9 @@ from app.modules.automation.adapters.selenium_bot import (
 )
 
 
-def _default_repo() -> MassApplyRepository:
-    from app.modules.applies import default_mass_apply_repo
-    return default_mass_apply_repo()
+def _default_uow_factory():
+    from app.modules.applies import default_uow
+    return default_uow
 
 MAX_APPLIES_PER_DAY = 30
 MAX_APPLIES_PER_BATCH = 5
@@ -151,15 +152,17 @@ def _fetch_candidates_via_driver(driver, keywords_list: list[str], want: int = 2
 
 
 async def _persist_outcome(
-    repo: MassApplyRepository,
+    uow_factory,
     company: str, title: str, url: str, result: ApplyResult,
 ) -> None:
     success = result.outcome in (ApplyOutcome.APPLIED, ApplyOutcome.INTEREST_SIGNALED)
     notes = f"selenium: outcome={result.outcome.value} pages={result.pages} {result.detail[:300]}"
-    await repo.upsert_mass_apply(
-        company_name=company, job_title=title, job_url=url,
-        channel="ats_easy_apply", success=success, notes=notes,
-    )
+    async with uow_factory() as uow:
+        await uow.mass_apply.upsert_mass_apply(
+            company_name=company, job_title=title, job_url=url,
+            channel="ats_easy_apply", success=success, notes=notes,
+        )
+        await uow.commit()
 
 
 async def run_batch(
@@ -167,18 +170,22 @@ async def run_batch(
     limit: int = 1,
     headless: bool = True,
     profile_phone: str = "",
-    repo: MassApplyRepository | None = None,
+    uow_factory=None,
 ) -> dict:
     """Main entry. Search, filter, apply with conservative pacing.
 
-    `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
+    `uow_factory` returns a fresh UnitOfWork per call; default is the SQLA
+    implementation. Each apply attempt persists its outcome in its OWN
+    transaction (independent atomicity per apply).
     """
     keywords_list = keywords_list or ["rust senior remote", "python backend remote senior"]
     limit = min(limit, MAX_APPLIES_PER_BATCH)
-    repo = repo or _default_repo()
+    uow_factory = uow_factory or _default_uow_factory()
 
-    await init_db()
-    today = await repo.count_applies_today("mass_apply")
+    async with uow_factory() as uow:
+        today = await uow.mass_apply.count_applies_today("mass_apply")
+        # read-only — no commit needed
+
     if today >= MAX_APPLIES_PER_DAY:
         return {"daily_cap_reached": True, "today": today}
     headroom = MAX_APPLIES_PER_DAY - today
@@ -211,7 +218,7 @@ async def run_batch(
 
             result = apply_to_job(driver, url, profile_phone)
             last_apply_at = time.monotonic()
-            await _persist_outcome(repo, company, title, url, result)
+            await _persist_outcome(uow_factory, company, title, url, result)
 
             if result.outcome == ApplyOutcome.APPLIED:
                 stats["applied"] += 1

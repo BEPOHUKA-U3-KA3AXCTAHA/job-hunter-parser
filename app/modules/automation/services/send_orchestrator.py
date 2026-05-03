@@ -23,7 +23,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from app.modules.applies import MassApplyRepository, PendingOutreach
+from app.modules.applies import PendingOutreach
 from app.modules.automation.adapters.camoufox import browser_session, human_sleep
 from app.modules.automation.adapters.linkedin_outreach import (
     INVITE_NOTE_MAX_CHARS,
@@ -37,9 +37,9 @@ MAX_SEND_PER_BATCH = 5
 MIN_GAP_BETWEEN_SENDS_S = 120
 
 
-def _default_repo() -> MassApplyRepository:
-    from app.modules.applies import default_mass_apply_repo
-    return default_mass_apply_repo()
+def _default_uow_factory():
+    from app.modules.applies import default_uow
+    return default_uow
 
 
 def make_short_note(body: str, name: str) -> str:
@@ -80,7 +80,7 @@ def make_short_note(body: str, name: str) -> str:
 
 
 async def _record_outcome(
-    repo: MassApplyRepository, apply_id, outcome: OutreachOutcome, detail: str = "",
+    uow_factory, apply_id, outcome: OutreachOutcome, detail: str = "",
 ) -> None:
     """Update the apply row with the result of the send attempt via port."""
     success = outcome in (OutreachOutcome.SENT_VIA_MESSAGE, OutreachOutcome.SENT_VIA_INVITE)
@@ -95,14 +95,16 @@ async def _record_outcome(
         notes = f"BLOCKED rate-limit at {now}: {detail}"
     else:
         notes = f"failed at {now}: {detail}"
-    await repo.mark_apply_sent(apply_id, success=success, notes=notes)
+    async with uow_factory() as _uow:
+
+        await _uow.mass_apply.mark_apply_sent(apply_id, success=success, notes=notes)
 
 
 async def run_send_batch(
     limit: int = MAX_SEND_PER_BATCH,
     dry_run: bool = True,
     headless: bool = True,
-    repo: MassApplyRepository | None = None,
+    uow_factory=None,
 ) -> dict:
     """Main entry point. Loads pending applies, sends up to `limit` of them.
 
@@ -110,8 +112,9 @@ async def run_send_batch(
     `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
     """
     limit = min(limit, MAX_SEND_PER_BATCH)
-    repo = repo or _default_repo()
-    sent_today = await repo.count_applies_today("dm_outreach")
+    uow_factory = uow_factory or _default_uow_factory()
+    async with uow_factory() as uow:
+        sent_today = await uow.mass_apply.count_applies_today("dm_outreach")
     if sent_today >= MAX_SENT_PER_DAY:
         logger.warning("Daily cap reached: {}/{} already sent in last 24h",
                        sent_today, MAX_SENT_PER_DAY)

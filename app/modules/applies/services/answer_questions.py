@@ -118,11 +118,11 @@ QUESTIONS TO ANSWER:
 """
 
 
-def _default_cache() -> QACacheRepository:
-    """Pick up the SQLA-backed cache lazily so importing this service doesn't
-    drag the ORM in at module-load time."""
-    from app.modules.applies.adapters.repository.qa_cache import SqlaQACacheRepository
-    return SqlaQACacheRepository()
+def _default_uow_factory():
+    """Lazily resolve the production UoW factory so importing this service
+    doesn't drag the ORM in at module-load time."""
+    from app.modules.applies import default_uow
+    return default_uow
 
 
 async def answer_questions(
@@ -132,7 +132,7 @@ async def answer_questions(
     company_name: str = "",
     profile: CandidateProfile | None = None,
     model: str = "claude-sonnet-4-6",
-    cache: QACacheRepository | None = None,
+    uow_factory=None,
 ) -> list[FormAnswer]:
     """Ask Claude (via local `claude` CLI) to answer form questions, in order.
 
@@ -147,30 +147,32 @@ async def answer_questions(
         return []
 
     profile = profile or CandidateProfile()
-    cache = cache or _default_cache()
+    uow_factory = uow_factory or _default_uow_factory()
 
     # 1. Cache lookup — every question, in order. Hits replace the LLM round-trip.
     cached_answers: list[FormAnswer | None] = []
-    for q in questions:
-        hit = await cache.get_cached(q.label)
-        if hit:
-            ans_text, source, conf = hit
-            # If LLM-cached but the question has a closed option list and the
-            # cached answer no longer matches the current options — invalidate
-            # (form options can change between job postings).
-            if q.options and ans_text not in q.options:
+    async with uow_factory() as _read_uow:
+        cache = _read_uow.qa_cache
+        for q in questions:
+            hit = await cache.get_cached(q.label)
+            if hit:
+                ans_text, source, conf = hit
+                # If LLM-cached but the question has a closed option list and the
+                # cached answer no longer matches the current options — invalidate
+                # (form options can change between job postings).
+                if q.options and ans_text not in q.options:
+                    cached_answers.append(None)
+                    continue
+                cached_answers.append(FormAnswer(
+                    answer=ans_text, confidence=conf,
+                    reasoning=f"cached ({source})",
+                ))
+                logger.info(
+                    "Q (cache-{}): {!r} → {!r} (conf={:.2f})",
+                    source, q.label[:50], ans_text[:60], conf,
+                )
+            else:
                 cached_answers.append(None)
-                continue
-            cached_answers.append(FormAnswer(
-                answer=ans_text, confidence=conf,
-                reasoning=f"cached ({source})",
-            ))
-            logger.info(
-                "Q (cache-{}): {!r} → {!r} (conf={:.2f})",
-                source, q.label[:50], ans_text[:60], conf,
-            )
-        else:
-            cached_answers.append(None)
 
     # 2. If every question is cached, skip LLM entirely
     pending_idx = [i for i, a in enumerate(cached_answers) if a is None]
@@ -243,10 +245,12 @@ async def answer_questions(
 
         # Persist confident LLM answers — user can review/correct via `jhp qa review`
         if ans.answer and ans.confidence >= 0.6:
-            await cache.save_to_cache(
-                q.label, ans.answer, q.options or None,
-                source="llm", confidence=ans.confidence,
-                company=company_name, job_title=job_title,
-            )
+            async with uow_factory() as _write_uow:
+                await _write_uow.qa_cache.save_to_cache(
+                    q.label, ans.answer, q.options or None,
+                    source="llm", confidence=ans.confidence,
+                    company=company_name, job_title=job_title,
+                )
+                await _write_uow.commit()
 
     return [a or FormAnswer(answer="", confidence=0.0) for a in final_answers]

@@ -219,8 +219,7 @@ def hunt(
     Secrets (API keys) come from .env. App config from config.toml.
     """
     from app.infra.config import get_secrets, load_app_config
-    from app.modules.applies import MessageChannel
-    from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
+    from app.modules.applies import MessageChannel, _legacy_apply_repo
     from app.entrypoints.cli.pipeline import run_pipeline
     from app.modules.companies import SearchCriteria
     from app.modules.users import CandidateProfile
@@ -310,7 +309,6 @@ def hunt(
             console.print("[yellow]No LLM key (GEMINI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY) — message bodies will be empty[/]")
 
         ch = MessageChannel(eff_channel)
-        repo = SqliteApplyRepository()
 
         from app.infra.db import init_db
         await init_db()
@@ -325,7 +323,7 @@ def hunt(
             channel=ch,
             output_csv=output,
             skip_fresh_days=eff_skip_fresh,
-            repo=repo,
+            repo=_legacy_apply_repo(),  # TODO: migrate pipeline to UoW
         )
 
     asyncio.run(_run())
@@ -650,11 +648,11 @@ def retry(
     from app.infra.db import get_session_maker
     from app.infra.db.tables.applies import ApplyRow
     from app.infra.db import init_db
-    from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
+    from app.modules.applies import _legacy_apply_repo
 
     async def _run():
         await init_db()
-        repo = SqliteApplyRepository()
+        repo = _legacy_apply_repo()  # TODO: migrate retry cmd to UoW
         Session = get_session_maker()
         created = 0
         async with Session() as session:
@@ -693,18 +691,17 @@ def curate(
     """
     from app.infra.config import get_secrets
     from app.infra.db import get_session_maker, init_db
-    from app.modules.applies.adapters.repository.candidates import SqlaCandidateBundleRepository
     from app.modules.applies.adapters.repository.sqla import _upsert_message
     from app.modules.applies import Message, MessageChannel, MessageStatus
-    from app.modules.applies import filter_and_score
+    from app.modules.applies import default_uow, filter_and_score
     from app.modules.users import CandidateProfile
 
     async def _run():
         await init_db()
         profile = CandidateProfile()
 
-        candidates_repo = SqlaCandidateBundleRepository()
-        bundles = await candidates_repo.load_active_bundles()
+        async with default_uow() as uow:
+            bundles = await uow.candidates.load_active_bundles()
         console.print(f"Loaded [cyan]{len(bundles)}[/] (job, company, dms) bundles from DB")
 
         pairs = filter_and_score(
@@ -846,9 +843,11 @@ def apply_cmd(
     Conservative: 30/day, 5/batch, 90+s gap between applies. Auto-aborts on
     LinkedIn warning pages (CAPTCHA / verify / restricted).
     """
+    from app.infra.db import init_db
     from app.modules.automation import run_batch
 
     async def _run():
+        await init_db()  # composition root applies migrations
         kws = [k.strip() for k in keywords.split(",") if k.strip()]
         result = await run_batch(kws, limit=limit, headless=headless, profile_phone=phone)
         console.print(f"\n[green]Done.[/] {result}")

@@ -5,24 +5,22 @@ Usage:
     python -m app.entrypoints.cli.qa review                         # low-confidence LLM rows
     python -m app.entrypoints.cli.qa add "LinkedIn*" "https://..."  # hand-curated
     python -m app.entrypoints.cli.qa delete <question fragment>
+
+CLI is a composition root — it constructs a UoW (the only place outside
+adapter code where session lifecycle is managed) and threads it through
+to the repo methods.
 """
 from __future__ import annotations
 
 import asyncio
-import sys
 
 import typer
 from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
-from app.infra.db import get_session_maker
 from app.infra.db.tables.form_answers import FormAnswerRow
-from app.modules.applies.adapters.repository.qa_cache import (
-    list_all,
-    list_low_confidence,
-    upsert_user_answer,
-)
+from app.modules.applies import default_uow
 
 app = typer.Typer(help="Manage cached answers for ATS form questions.")
 console = Console()
@@ -35,7 +33,8 @@ def list_cmd(
 ):
     """Show all cached Q&A pairs sorted by last_used_at desc."""
     async def _run():
-        rows = await list_all(limit=limit, source=source or None)
+        async with default_uow() as uow:
+            rows = await uow.qa_cache.list_all(limit=limit, source=source or None)
         if not rows:
             console.print("[yellow]Cache is empty.[/]")
             return
@@ -62,12 +61,13 @@ def review(
 ):
     """Walk every uncertain LLM-source row and let user accept or correct."""
     async def _run():
-        rows = await list_low_confidence(threshold=threshold)
+        # Fetch list inside one read UoW
+        async with default_uow() as read_uow:
+            rows = await read_uow.qa_cache.list_low_confidence(threshold=threshold)
         if not rows:
             console.print(f"[green]No LLM-source rows below conf {threshold}. Cache is clean.[/]")
             return
         console.print(f"[yellow]{len(rows)} low-confidence answers — press Enter to accept, type new value to override, or 'd' to delete:[/]\n")
-        Session = get_session_maker()
         for r in rows:
             console.print(f"\n[bold]Q:[/] {r.question_raw}")
             if r.options:
@@ -75,19 +75,23 @@ def review(
             console.print(f"[dim]   from: {r.last_company or '?'} / {r.last_job_title or '?'}  used {r.used_count}× | conf {r.confidence:.2f}[/]")
             console.print(f"[cyan]A (LLM):[/] {r.answer}")
             new = console.input("[yellow]>>> [/]").strip()
-            if new == "d":
-                async with Session() as s:
-                    row = (await s.execute(select(FormAnswerRow).where(FormAnswerRow.id == r.id))).scalar_one()
-                    await s.delete(row)
-                    await s.commit()
-                console.print("[red]deleted[/]")
-            elif new:
-                await upsert_user_answer(r.question_raw, new, r.options)
-                console.print("[green]saved[/]")
-            else:
-                # Promote LLM → user without changing answer (treat as confirmed)
-                await upsert_user_answer(r.question_raw, r.answer, r.options)
-                console.print("[green]confirmed[/]")
+            async with default_uow() as uow:
+                if new == "d":
+                    row = (await uow.qa_cache._s.execute(  # noqa: SLF001 — composition-root delete
+                        select(FormAnswerRow).where(FormAnswerRow.id == r.id)
+                    )).scalar_one()
+                    await uow.qa_cache._s.delete(row)
+                    await uow.commit()
+                    console.print("[red]deleted[/]")
+                elif new:
+                    await uow.qa_cache.upsert_user_answer(r.question_raw, new, r.options)
+                    await uow.commit()
+                    console.print("[green]saved[/]")
+                else:
+                    # Promote LLM → user without changing answer (treat as confirmed)
+                    await uow.qa_cache.upsert_user_answer(r.question_raw, r.answer, r.options)
+                    await uow.commit()
+                    console.print("[green]confirmed[/]")
 
     asyncio.run(_run())
 
@@ -96,7 +100,9 @@ def review(
 def add(label: str, answer: str):
     """Add or override a Q&A entry as user-curated (highest priority)."""
     async def _run():
-        await upsert_user_answer(label, answer)
+        async with default_uow() as uow:
+            await uow.qa_cache.upsert_user_answer(label, answer)
+            await uow.commit()
         console.print(f"[green]✓ saved[/] {label!r} → {answer!r}")
     asyncio.run(_run())
 
@@ -105,8 +111,8 @@ def add(label: str, answer: str):
 def delete(fragment: str):
     """Delete entries whose question_raw contains <fragment> (substring match)."""
     async def _run():
-        Session = get_session_maker()
-        async with Session() as session:
+        async with default_uow() as uow:
+            session = uow.qa_cache._s  # noqa: SLF001 — composition-root delete
             rows = list(
                 (
                     await session.execute(
@@ -123,7 +129,7 @@ def delete(fragment: str):
             if input().strip().lower() == "y":
                 for r in rows:
                     await session.delete(r)
-                await session.commit()
+                await uow.commit()
                 console.print(f"[green]✓ deleted {len(rows)}[/]")
 
     asyncio.run(_run())
