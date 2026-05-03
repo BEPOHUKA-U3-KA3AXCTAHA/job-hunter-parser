@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 from random import randint
 from urllib.parse import quote_plus
 
-import httpx
 from loguru import logger
 
 # NOTE: schema migrations belong to the composition root (entrypoints/cli),

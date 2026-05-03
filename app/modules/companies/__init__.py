@@ -15,13 +15,22 @@ from app.modules.companies.models import (
     TechStack,
 )
 from app.modules.companies.ports import CompanySource
+from app.modules.companies.ports.companies_uow import CompaniesUoW
 from app.modules.companies.ports.repository import CompanyRepository, JobApplyTarget
 
+
+def default_uow() -> CompaniesUoW:
+    """Composition-root helper — production SQLA-backed UoW."""
+    from app.modules.companies.adapters.companies_uow.sqla import SqlaCompaniesUoW
+    return SqlaCompaniesUoW()
+
 __all__ = [
+    "CompaniesUoW",
     "Company",
     "CompanyNotFound",
     "CompanyRepository",
     "CompanySource",
+    "default_uow",
     "JobApplyTarget",
     "JobPosting",
     "JobPostingNotFound",

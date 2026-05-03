@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db.tables.form_answers import FormAnswerRow
+from app.modules.applies.ports.qa_cache import QACacheRepository
 
 
 def normalize_question(label: str) -> str:
@@ -26,7 +27,7 @@ def normalize_question(label: str) -> str:
     return s.strip()
 
 
-class SqlaQACacheRepository:
+class SqlaQACacheRepository(QACacheRepository):
     """Implements `app.modules.applies.ports.qa_cache.QACacheRepository`."""
 
     def __init__(self, session: AsyncSession) -> None:

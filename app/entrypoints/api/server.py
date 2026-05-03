@@ -38,8 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
 
-from app.infra.db import get_session_maker, init_db
-from app.infra.db.tables.applies import ApplyRow
+from app.infra.db import init_db
 
 
 @dataclass
@@ -162,7 +161,7 @@ async def fill_plan(req: FillPlanRequest) -> FillPlanResponse:
     The extension then executes those actions via real DOM events — no
     Selenium, no automation flag, so Cloudflare Turnstile passes naturally.
     """
-    from app.modules.automation.services.page_filler import (
+    from app.modules.automation.adapters.page_filler import (
         ask_claude_for_fill_plan, snapshot_form_html,
     )
     from app.modules.users.models.candidate_profile import CandidateProfile
@@ -234,23 +233,11 @@ async def apply_result(result: ApplyResult):
 
 @app.get("/stats")
 async def stats():
-    Session = get_session_maker()
-    cutoff = datetime.utcnow() - timedelta(hours=24)
-    async with Session() as session:
-        from sqlalchemy import and_, select
-
-        result = await session.execute(
-            select(ApplyRow).where(
-                and_(
-                    ApplyRow.flank == "mass_apply",
-                    ApplyRow.sent_at.is_not(None),
-                    ApplyRow.sent_at >= cutoff,
-                )
-            )
-        )
-        applied_today = len(list(result.scalars()))
+    from app.modules.admin import default_uow as default_admin_uow
+    async with default_admin_uow() as uow:
+        status = await uow.admin.db_status()
     return {
-        "applied_today": applied_today,
+        "applied_today": status.sent_today,
         "queue_size": len(state.queue),
         "in_flight": len(state.in_flight),
     }
@@ -299,79 +286,26 @@ async def _refill_queue(keywords: str = "rust senior remote", limit: int = 10):
 
 
 async def _persist_apply(cand: JobCandidate, result: ApplyResult):
-    """Save the apply attempt outcome to the applies table."""
-    Session = get_session_maker()
-    from sqlalchemy import and_, select
+    """Save the apply attempt outcome via the admin UoW (one atomic upsert
+    of company + synthetic Hiring Team DM + job posting + apply row)."""
+    from app.modules.admin import default_uow as default_admin_uow
 
-    from app.infra.db.tables.companies import CompanyRow, JobPostingRow
-    from app.infra.db.tables.people import DecisionMakerRow
-
-    async with Session() as session:
-        # Company
-        comp_q = await session.execute(
-            select(CompanyRow).where(CompanyRow.name == cand.company)
-        )
-        comp = comp_q.scalar_one_or_none()
-        if not comp:
-            comp = CompanyRow(name=cand.company, source="linkedin_easy_apply", is_hiring=True)
-            session.add(comp)
-            await session.flush()
-        # Synthetic Hiring Team DM
-        dm_q = await session.execute(
-            select(DecisionMakerRow).where(
-                and_(
-                    DecisionMakerRow.company_id == comp.id,
-                    DecisionMakerRow.full_name == "Hiring Team",
-                )
+    detail = (
+        f"firefox-ext: outcome={result.outcome} pages={result.pages or 0} {result.detail or ''}"
+    )
+    try:
+        async with default_admin_uow() as uow:
+            await uow.admin.record_external_apply(
+                company_name=cand.company,
+                job_url=cand.url,
+                job_title=cand.title,
+                channel="ats_easy_apply",
+                outcome=result.outcome,
+                detail=detail,
             )
-        )
-        dm = dm_q.scalar_one_or_none()
-        if not dm:
-            dm = DecisionMakerRow(
-                company_id=comp.id,
-                full_name="Hiring Team",
-                role="hr",
-                contacts={"channel": "linkedin_easy_apply"},
-            )
-            session.add(dm)
-            await session.flush()
-        # Job posting
-        jp_q = await session.execute(
-            select(JobPostingRow).where(JobPostingRow.source_url == cand.url)
-        )
-        jp = jp_q.scalar_one_or_none()
-        if not jp:
-            jp = JobPostingRow(
-                title=cand.title,
-                company_id=comp.id,
-                source="linkedin_easy_apply",
-                source_url=cand.url,
-                is_active=True,
-            )
-            session.add(jp)
-            await session.flush()
-        # Apply row
-        now = datetime.utcnow()
-        ap = ApplyRow(
-            job_posting_id=jp.id,
-            decision_maker_id=dm.id,
-            attempt_no=1,
-            flank="mass_apply",
-            method="auto_apply",
-            channel="ats_easy_apply",
-            relevance_score=50,
-            status="sent" if result.outcome == "applied" else "failed",
-            apply_url=cand.url,
-            sent_at=now if result.outcome == "applied" else None,
-            generated_at=now,
-            notes=f"firefox-ext: outcome={result.outcome} pages={result.pages or 0} {result.detail or ''}",
-        )
-        session.add(ap)
-        try:
-            await session.commit()
-        except Exception as e:
-            await session.rollback()
-            logger.debug("apply already in DB: {}", e)
+            await uow.commit()
+    except Exception as e:
+        logger.debug("apply already in DB: {}", e)
 
 
 @app.on_event("startup")

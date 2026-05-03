@@ -20,11 +20,13 @@ from loguru import logger
 from app.modules.automation.adapters.external_apply.base import (
     AtsContext,
     AtsResult,
-    click_button_by_text,
-)
+    click_button_by_text,)
+
+from app.modules.automation.ports.external_apply import AtsHandler
 
 
-class WorkdayHandler:
+
+class WorkdayHandler(AtsHandler):
     name = "workday"
 
     def can_handle(self, url: str) -> bool:

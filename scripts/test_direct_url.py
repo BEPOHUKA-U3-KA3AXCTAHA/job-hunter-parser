@@ -17,7 +17,7 @@ from app.modules.automation.adapters.external_apply.base import (
     detect_form_errors, click_button_by_text, upload_resume,
     load_ats_context,
 )
-from app.modules.automation.services.page_filler import (
+from app.modules.automation.adapters.page_filler import (
     fill_form_via_page_snapshot,
 )
 from app.modules.automation.adapters.selenium_bot import (

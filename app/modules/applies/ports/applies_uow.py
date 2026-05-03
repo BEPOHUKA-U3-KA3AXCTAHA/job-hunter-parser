@@ -5,20 +5,21 @@ provides a single transactional scope for a service-layer business
 operation. Default behavior on `__aexit__` is rollback — services MUST
 call `await uow.commit()` explicitly.
 
+Naming convention: port files exposing a UoW Protocol END WITH `_uow.py`
+so the linter (rule 7) can pin sessions/commits to the matching adapter
+folder (`adapters/<port_stem>/<impl>.py`, here `adapters/applies_uow/`).
+
 Usage in services:
 
-    async def record_outcome(uow: UnitOfWork, ...):
+    async def record_outcome(uow: AppliesUoW, ...):
         async with uow:
             await uow.mass_apply.upsert_apply(...)
             await uow.mass_apply.mark_apply_sent(...)
             await uow.commit()        # explicit; default would rollback
-
-Adapters live under `adapters/unit_of_work/<impl>.py` (rule 3 — adapter
-folder mirrors port name).
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from app.modules.applies.ports.candidates import CandidateBundleRepository
 from app.modules.applies.ports.mass_apply import MassApplyRepository
@@ -26,7 +27,8 @@ from app.modules.applies.ports.qa_cache import QACacheRepository
 from app.modules.applies.ports.repository import ApplyRepository
 
 
-class UnitOfWork(Protocol):
+@runtime_checkable
+class AppliesUoW(Protocol):
     """Transactional boundary for one applies-module business operation."""
 
     apply: ApplyRepository
@@ -34,7 +36,7 @@ class UnitOfWork(Protocol):
     candidates: CandidateBundleRepository
     qa_cache: QACacheRepository
 
-    async def __aenter__(self) -> UnitOfWork: ...
+    async def __aenter__(self) -> AppliesUoW: ...
 
     async def __aexit__(
         self,

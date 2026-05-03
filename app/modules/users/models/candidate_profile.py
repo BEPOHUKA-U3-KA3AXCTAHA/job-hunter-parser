@@ -29,7 +29,7 @@ def _load_cv_text() -> str:
         return ""
 
 
-def _load_user_info() -> str:
+def load_user_info() -> str:
     """Read free-form profile text from the users table (default user).
 
     This is the SOURCE OF TRUTH for everything the LLM puts in form fields
@@ -106,7 +106,7 @@ class CandidateProfile:
     # ground truth (real LinkedIn URL, Telegram, visa status, etc.) and
     # OVERRIDES anything parsed from the CV PDF (which may carry stale
     # info like a wrong handle).
-    user_info: str = field(default_factory=_load_user_info)
+    user_info: str = field(default_factory=load_user_info)
 
     # CV text is a secondary source — used when the user_info field is
     # empty or doesn't mention a particular fact (work history, projects,

@@ -3,15 +3,19 @@
 Cross-module callers MUST import from here only:
     from app.modules.users import User, UserRepository, default_user_repo
 """
-from app.modules.users.models.candidate_profile import CandidateProfile
+from app.modules.users.models.candidate_profile import CandidateProfile, load_user_info
 from app.modules.users.models.user import User, UserNotFound
 from app.modules.users.ports.repository import UserRepository
+from app.modules.users.ports.users_uow import UsersUoW
 
 
-def default_user_repo() -> UserRepository:
-    """Composition-root helper — production SQLA-backed repository."""
-    from app.modules.users.adapters.repository.sqla import SqlaUserRepository
-    return SqlaUserRepository()
+def default_uow() -> UsersUoW:
+    """Composition-root helper — production SQLA-backed UoW."""
+    from app.modules.users.adapters.users_uow.sqla import SqlaUsersUoW
+    return SqlaUsersUoW()
 
 
-__all__ = ["CandidateProfile", "User", "UserNotFound", "UserRepository", "default_user_repo"]
+__all__ = [
+    "CandidateProfile", "User", "UserNotFound",
+    "UserRepository", "UsersUoW", "default_uow", "load_user_info",
+]

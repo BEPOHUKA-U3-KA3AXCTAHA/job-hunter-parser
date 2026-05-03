@@ -19,10 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infra.db.tables.applies import ApplyRow
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.infra.db.tables.people import DecisionMakerRow
-from app.modules.applies.ports.mass_apply import PendingOutreach
+from app.modules.applies.ports.mass_apply import MassApplyRepository, PendingOutreach
 
 
-class SqlaMassApplyRepository:
+class SqlaMassApplyRepository(MassApplyRepository):
     """Implements `app.modules.applies.ports.mass_apply.MassApplyRepository`.
 
     Session is handed in by the UoW. Methods perform their reads/writes on

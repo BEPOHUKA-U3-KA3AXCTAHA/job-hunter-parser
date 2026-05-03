@@ -332,58 +332,22 @@ def hunt(
 @app.command()
 def stats() -> None:
     """Show DB statistics."""
-    from sqlalchemy import func, select
-    from app.infra.db import get_session_maker
-    from app.infra.db.tables.applies import ApplyRow
-    from app.infra.db.tables.companies import CompanyRow
-    from app.infra.db.tables.people import DecisionMakerRow
     from app.infra.db import init_db
+    from app.modules.admin import default_uow
 
     async def _run():
         await init_db()
-        Session = get_session_maker()
-        async with Session() as session:
-            total_companies = (await session.execute(select(func.count(CompanyRow.id)))).scalar() or 0
-            total_dms = (await session.execute(select(func.count(DecisionMakerRow.id)))).scalar() or 0
-            total_leads = (await session.execute(select(func.count(ApplyRow.id)))).scalar() or 0
-
-            # Companies with/without contacts
-            with_contacts = (await session.execute(
-                select(func.count(func.distinct(DecisionMakerRow.company_id)))
-            )).scalar() or 0
-
-            # By source
-            by_source = await session.execute(
-                select(CompanyRow.source, func.count(CompanyRow.id)).group_by(CompanyRow.source)
-            )
-
-            # By role
-            by_role = await session.execute(
-                select(DecisionMakerRow.role, func.count(DecisionMakerRow.id)).group_by(DecisionMakerRow.role)
-            )
+        async with default_uow() as uow:
+            status = await uow.admin.db_status()
 
         table = Table(title="Database Stats")
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="green")
-        table.add_row("Total companies", str(total_companies))
-        table.add_row("Total contacts", str(total_dms))
-        table.add_row("Total leads", str(total_leads))
-        table.add_row("Companies with contacts", f"{with_contacts} ({with_contacts * 100 // max(total_companies, 1)}%)")
+        table.add_row("Total companies", str(status.total_companies))
+        table.add_row("Total contacts", str(status.total_dms))
+        table.add_row("Total applies", str(status.total_applies))
+        table.add_row("Sent in last 24h", str(status.sent_today))
         console.print(table)
-
-        src_table = Table(title="By Source")
-        src_table.add_column("Source", style="cyan")
-        src_table.add_column("Count", style="green")
-        for source, count in by_source:
-            src_table.add_row(source or "unknown", str(count))
-        console.print(src_table)
-
-        role_table = Table(title="Contacts by Role")
-        role_table.add_column("Role", style="cyan")
-        role_table.add_column("Count", style="green")
-        for role, count in by_role:
-            role_table.add_row(role, str(count))
-        console.print(role_table)
 
     asyncio.run(_run())
 
@@ -394,39 +358,28 @@ def companies(
     source: str | None = typer.Option(None, help="Filter by source"),
 ) -> None:
     """List all companies in DB."""
-    from sqlalchemy import select
-    from app.infra.db import get_session_maker
-    from app.infra.db.tables.companies import CompanyRow
     from app.infra.db import init_db
+    from app.modules.admin import default_uow
 
     async def _run():
         await init_db()
-        Session = get_session_maker()
-        async with Session() as session:
-            stmt = (
-                select(CompanyRow)
-                .order_by(CompanyRow.last_dm_scan_at.desc().nullslast(), CompanyRow.name)
-                .limit(limit)
-            )
-            if source:
-                stmt = stmt.where(CompanyRow.source == source)
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
+        async with default_uow() as uow:
+            rows = await uow.admin.list_companies(limit=limit)
+        if source:
+            rows = [r for r in rows if r.source == source]
 
         table = Table(title=f"Companies ({len(rows)})")
         table.add_column("#", style="dim", width=4)
         table.add_column("Name", style="cyan")
         table.add_column("Source")
-        table.add_column("Location")
-        table.add_column("Tech")
+        table.add_column("Hiring")
         table.add_column("DM scan", style="dim")
 
         for i, r in enumerate(rows, 1):
             scan = r.last_dm_scan_at.strftime("%Y-%m-%d") if r.last_dm_scan_at else "-"
             table.add_row(
                 str(i), r.name, r.source or "-",
-                (r.location or "Remote")[:25],
-                (r.tech_stack or "")[:35],
+                "yes" if r.is_hiring else "-",
                 scan,
             )
         console.print(table)
@@ -445,58 +398,27 @@ def contacts(
 
     Freshness is per-company (companies.last_dm_scan_at), not per-dm.
     """
-    from datetime import datetime, timedelta
-    from sqlalchemy import select
-    from app.infra.db import get_session_maker
-    from app.infra.db.tables.companies import CompanyRow
-    from app.infra.db.tables.people import DecisionMakerRow
     from app.infra.db import init_db
+    from app.modules.admin import default_uow
 
     async def _run():
         await init_db()
-        Session = get_session_maker()
-        async with Session() as session:
-            stmt = (
-                select(DecisionMakerRow, CompanyRow)
-                .join(CompanyRow)
-                .order_by(CompanyRow.last_dm_scan_at.desc().nullslast(), CompanyRow.name)
-                .limit(limit)
-            )
-            if role:
-                stmt = stmt.where(DecisionMakerRow.role == role)
-            if company:
-                stmt = stmt.where(CompanyRow.name.ilike(f"%{company}%"))
-            if max_age_days > 0:
-                cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-                stmt = stmt.where(CompanyRow.last_dm_scan_at >= cutoff)
-            result = await session.execute(stmt)
-            rows = result.all()
+        async with default_uow() as uow:
+            rows = await uow.admin.list_people(limit=limit)
+        if role:
+            rows = [r for r in rows if r.role == role]
+        if company:
+            rows = [r for r in rows if company.lower() in r.company_name.lower()]
 
         table = Table(title=f"Contacts ({len(rows)})")
         table.add_column("#", style="dim", width=4)
         table.add_column("Name", style="cyan")
         table.add_column("Role")
         table.add_column("Company")
-        table.add_column("Scan age", style="green")
         table.add_column("Channels", style="dim")
-
-        now = datetime.utcnow()
-        for i, (dm, comp) in enumerate(rows, 1):
-            if comp.last_dm_scan_at:
-                age_days = (now - comp.last_dm_scan_at).days
-                freshness = f"{age_days}d ago" if age_days > 0 else "today"
-                freshness_style = "[green]" if age_days < 7 else "[yellow]" if age_days < 30 else "[red]"
-                fresh_cell = f"{freshness_style}{freshness}[/]"
-            else:
-                fresh_cell = "[dim]never[/]"
-            channels = ", ".join(sorted((dm.contacts or {}).keys())) or "-"
-            table.add_row(
-                str(i), dm.full_name,
-                (dm.title_raw or dm.role)[:30],
-                comp.name[:30],
-                fresh_cell,
-                channels[:40],
-            )
+        for i, r in enumerate(rows, 1):
+            channels = ", ".join(sorted((r.contacts or {}).keys())) or "-"
+            table.add_row(str(i), r.full_name, r.role or "-", r.company_name[:30], channels[:40])
         console.print(table)
 
     asyncio.run(_run())
@@ -517,34 +439,22 @@ def jobs_list(
     the source didn't expose the count are kept (treated as unknown).
     """
     from datetime import datetime, timedelta
-    from sqlalchemy import or_, select
-    from app.infra.db import get_session_maker
-    from app.infra.db.tables.companies import CompanyRow, JobPostingRow
     from app.infra.db import init_db
+    from app.modules.admin import default_uow
 
     async def _run():
         await init_db()
-        Session = get_session_maker()
-        async with Session() as session:
-            stmt = (
-                select(JobPostingRow, CompanyRow)
-                .outerjoin(CompanyRow, CompanyRow.id == JobPostingRow.company_id)
-                .order_by(JobPostingRow.posted_at.desc().nullslast(), JobPostingRow.first_seen_at.desc())
-                .limit(limit)
-            )
-            if source:
-                stmt = stmt.where(JobPostingRow.source == source)
-            if max_applicants is not None:
-                # keep unknowns + those <= cap
-                stmt = stmt.where(or_(JobPostingRow.applicants_count.is_(None),
-                                      JobPostingRow.applicants_count <= max_applicants))
-            if max_age_days is not None:
-                cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-                stmt = stmt.where(JobPostingRow.posted_at >= cutoff)
-            if no_orphans:
-                stmt = stmt.where(JobPostingRow.company_id.is_not(None))
-            result = await session.execute(stmt)
-            rows = result.all()
+        async with default_uow() as uow:
+            rows = await uow.admin.list_jobs(limit=limit)
+        if source:
+            rows = [r for r in rows if r.source == source]
+        if max_applicants is not None:
+            rows = [r for r in rows if r.applicants_count is None or r.applicants_count <= max_applicants]
+        if max_age_days is not None:
+            cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+            rows = [r for r in rows if r.posted_at and r.posted_at >= cutoff]
+        if no_orphans:
+            rows = [r for r in rows if r.company_name]
 
         table = Table(title=f"Job Postings ({len(rows)})")
         table.add_column("#", style="dim", width=4)
@@ -553,31 +463,22 @@ def jobs_list(
         table.add_column("Source")
         table.add_column("Apps", style="green")
         table.add_column("Age")
-        table.add_column("Salary")
 
         csv_rows: list[dict] = []
         now = datetime.utcnow()
-        for i, (jp, comp) in enumerate(rows, 1):
-            apps = str(jp.applicants_count) if jp.applicants_count is not None else "-"
-            age = f"{(now - jp.posted_at).days}d" if jp.posted_at else "-"
-            salary = _format_salary(jp.salary_min, jp.salary_max)
-            comp_name = (comp.name if comp else "[orphan]")[:25]
-            table.add_row(
-                str(i), jp.title[:50], comp_name,
-                jp.source or "-", apps, age, salary,
-            )
+        for i, r in enumerate(rows, 1):
+            apps = str(r.applicants_count) if r.applicants_count is not None else "-"
+            age = f"{(now - r.posted_at).days}d" if r.posted_at else "-"
+            comp_name = (r.company_name or "[orphan]")[:25]
+            table.add_row(str(i), r.title[:50], comp_name, r.source or "-", apps, age)
             csv_rows.append({
-                "title": jp.title,
-                "company": comp.name if comp else "",
-                "source": jp.source or "",
-                "url": jp.source_url or "",
-                "applicants": jp.applicants_count if jp.applicants_count is not None else "",
-                "posted_at": jp.posted_at.isoformat() if jp.posted_at else "",
-                "age_days": (now - jp.posted_at).days if jp.posted_at else "",
-                "salary_min": jp.salary_min or "",
-                "salary_max": jp.salary_max or "",
-                "location": jp.location or "",
-                "tech_stack": jp.tech_stack or "",
+                "title": r.title,
+                "company": r.company_name or "",
+                "source": r.source or "",
+                "url": r.source_url or "",
+                "applicants": r.applicants_count if r.applicants_count is not None else "",
+                "posted_at": r.posted_at.isoformat() if r.posted_at else "",
+                "age_days": (now - r.posted_at).days if r.posted_at else "",
             })
         console.print(table)
         if output:
@@ -596,39 +497,23 @@ def stale(
     Freshness is per-company. `hunt` will refresh these on the next run
     (when skip_fresh_days < age).
     """
-    from datetime import datetime, timedelta
-    from sqlalchemy import or_, select
-    from app.infra.db import get_session_maker
-    from app.infra.db.tables.companies import CompanyRow
+    from datetime import datetime
     from app.infra.db import init_db
+    from app.modules.admin import default_uow
 
     async def _run():
         await init_db()
-        cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-        Session = get_session_maker()
-        async with Session() as session:
-            stmt = (
-                select(CompanyRow)
-                .where(or_(CompanyRow.last_dm_scan_at < cutoff, CompanyRow.last_dm_scan_at.is_(None)))
-                .order_by(CompanyRow.last_dm_scan_at.asc().nullsfirst())
-                .limit(limit)
-            )
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
+        async with default_uow() as uow:
+            rows = await uow.admin.stale_companies(max_age_days=max_age_days, limit=limit)
 
         console.print(f"[yellow]Companies with stale (>{max_age_days}d) or missing DM scan:[/]")
         table = Table()
         table.add_column("Company", style="cyan")
-        table.add_column("Source")
         table.add_column("Last DM scan", style="red")
         now = datetime.utcnow()
         for r in rows:
-            if r.last_dm_scan_at:
-                age = (now - r.last_dm_scan_at).days
-                cell = f"{age} days ago"
-            else:
-                cell = "never"
-            table.add_row(r.name, r.source or "-", cell)
+            cell = f"{(now - r.last_dm_scan_at).days} days ago" if r.last_dm_scan_at else "never"
+            table.add_row(r.name, cell)
         console.print(table)
         console.print(f"\nTotal stale: [red]{len(rows)}[/]")
 

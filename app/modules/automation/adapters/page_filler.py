@@ -53,7 +53,7 @@ async def ask_claude_for_fill_plan(
     form_html: str, profile_text: str, prior_attempt_errors: list[str] | None = None,
 ) -> list[dict]:
     """Ask Claude Sonnet for a JSON action list to fill the form."""
-    from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
+    from app.modules.applies import get_claude_cli_pool
 
     error_block = ""
     if prior_attempt_errors:
@@ -114,7 +114,7 @@ CANDIDATE PROFILE:
 FORM HTML:
 {form_html}
 """
-    pool = ClaudeCLIPool(workers=1, model="claude-sonnet-4-6", timeout_s=180)
+    pool = get_claude_cli_pool(workers=1, model="claude-sonnet-4-6", timeout_s=180)
     results = await pool.batch_generate([(system, user)])
     if not results or not results[0].ok:
         logger.warning("page-filler: Claude call failed: {}",

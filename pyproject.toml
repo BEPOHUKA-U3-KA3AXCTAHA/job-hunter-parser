@@ -57,6 +57,8 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "ipython>=8.30.0",
+    "import-linter>=2.0",
+    "pre-commit>=3.5.0",
 ]
 
 [project.scripts]
@@ -76,11 +78,21 @@ target-version = "py312"
 [tool.ruff.lint]
 select = [
     "E", "W", "F", "I", "N", "B", "C4", "UP", "ARG", "SIM", "TCH", "RUF",
+    "PLR0913",  # rule 8 — too many arguments (uses max-args below)
 ]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG"]
+"tests/*" = ["ARG", "PLR0913"]
+# Pydantic models / @dataclass: many fields by design — exclude the params count.
+"app/modules/*/models/*.py" = ["PLR0913"]
+# Typer CLI commands accept many flags — that's the intentional UX surface.
+"app/entrypoints/cli/*.py" = ["PLR0913"]
+# API request schemas and route handlers — same logic as CLI / models.
+"app/entrypoints/api/*.py" = ["PLR0913"]
+
+[tool.ruff.lint.pylint]
+max-args = 3   # rule 8 — bundle 4+ params into a DTO/dataclass
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -91,3 +103,12 @@ python_files = ["test_*.py"]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
+
+
+# --- Architectural import contracts (rule 1, 4, 5) ----------------------
+# Run with: lint-imports --config pyproject.toml
+# import-linter v2.x reads contracts via [importlinter] / [[tool.importlinter.contracts]]
+# but it doesn't natively use pyproject.toml — it expects setup.cfg or
+# .importlinter. We keep the canonical config in `.importlinter` at the
+# repo root.
+

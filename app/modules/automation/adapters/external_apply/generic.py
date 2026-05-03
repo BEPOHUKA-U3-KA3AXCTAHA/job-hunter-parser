@@ -18,11 +18,13 @@ from app.modules.automation.adapters.external_apply.base import (
     detect_form_errors,
     fill_input,
     find_visible,
-    upload_resume,
-)
+    upload_resume,)
+
+from app.modules.automation.ports.external_apply import AtsHandler
 
 
-class GenericHandler:
+
+class GenericHandler(AtsHandler):
     name = "generic"
 
     def can_handle(self, url: str) -> bool:
@@ -345,10 +347,10 @@ class GenericHandler:
                 # whatever errors the prior submit raised, returns an action
                 # plan that handles weird widgets the field-level extractor
                 # missed (custom comboboxes, button-style toggles, etc).
-                from app.modules.automation.services.page_filler import (
+                from app.modules.automation.adapters.page_filler import (
                     fill_form_via_page_snapshot,
                 )
-                from app.modules.users.models.candidate_profile import CandidateProfile
+                from app.modules.users import CandidateProfile
                 profile = CandidateProfile()
                 logger.info("generic[{}] attempt {}: page-snapshot Claude pass",
                             host, attempt + 1)

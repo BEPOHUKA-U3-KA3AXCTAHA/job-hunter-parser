@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.infra.db.tables.people import DecisionMakerRow
 from app.modules.applies.ports.candidates import CandidateBundle
+from app.modules.applies.ports.candidates import CandidateBundle, CandidateBundleRepository
 from app.modules.companies import Company, JobPosting
 from app.modules.people import DecisionMaker, DecisionMakerRole
 from app.modules.companies import Seniority, TechStack
@@ -82,7 +83,7 @@ def _dm_row_to_domain(dm: DecisionMakerRow) -> DecisionMaker:
     )
 
 
-class SqlaCandidateBundleRepository:
+class SqlaCandidateBundleRepository(CandidateBundleRepository):
     """Implements CandidateBundleRepository over SQLAlchemy."""
     def __init__(self, session: AsyncSession) -> None:
         self._s = session

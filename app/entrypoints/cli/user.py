@@ -17,7 +17,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from app.modules.users import User, default_user_repo
+from app.modules.users import User, default_uow
 
 app = typer.Typer(help="Manage application users (single-user mode for now).")
 console = Console()
@@ -27,7 +27,8 @@ console = Console()
 def show():
     """Print the current default user + their info text."""
     async def _run():
-        user = await default_user_repo().get_default()
+        async with default_uow() as uow:
+            user = await uow.users.get_default()
         if not user:
             console.print("[yellow]No users in DB. Run `jhp-user create EMAIL` to seed one.[/]")
             return
@@ -45,12 +46,13 @@ def show():
 def create(email: str):
     """Add a new user row with the given email (info empty)."""
     async def _run():
-        repo = default_user_repo()
-        existing = await repo.get_by_email(email)
-        if existing:
-            console.print(f"[yellow]User with email {email} already exists.[/]")
-            return
-        await repo.upsert(User(email=email, info=""))
+        async with default_uow() as uow:
+            existing = await uow.users.get_by_email(email)
+            if existing:
+                console.print(f"[yellow]User with email {email} already exists.[/]")
+                return
+            await uow.users.upsert(User(email=email, info=""))
+            await uow.commit()
         console.print(f"[green]✓ created user[/] {email}")
     asyncio.run(_run())
 
@@ -59,12 +61,13 @@ def create(email: str):
 def set_info(text: str):
     """Replace the default user's info field with the given text."""
     async def _run():
-        repo = default_user_repo()
-        user = await repo.get_default()
-        if not user:
-            console.print("[red]No users in DB. Run `jhp-user create EMAIL` first.[/]")
-            raise typer.Exit(1)
-        await repo.update_info(user.email, text)
+        async with default_uow() as uow:
+            user = await uow.users.get_default()
+            if not user:
+                console.print("[red]No users in DB. Run `jhp-user create EMAIL` first.[/]")
+                raise typer.Exit(1)
+            await uow.users.update_info(user.email, text)
+            await uow.commit()
         console.print(f"[green]✓ updated info for[/] {user.email} ({len(text)} chars)")
     asyncio.run(_run())
 
@@ -73,8 +76,8 @@ def set_info(text: str):
 def edit_info():
     """Open the default user's info field in $EDITOR (or vi)."""
     async def _run():
-        repo = default_user_repo()
-        user = await repo.get_default()
+        async with default_uow() as uow:
+            user = await uow.users.get_default()
         if not user:
             console.print("[red]No users in DB. Run `jhp-user create EMAIL` first.[/]")
             raise typer.Exit(1)
@@ -88,7 +91,9 @@ def edit_info():
         if new_text == (user.info or ""):
             console.print("[yellow]No changes.[/]")
             return
-        await repo.update_info(user.email, new_text)
+        async with default_uow() as uow:
+            await uow.users.update_info(user.email, new_text)
+            await uow.commit()
         console.print(f"[green]✓ updated info[/] ({len(new_text)} chars)")
     asyncio.run(_run())
 

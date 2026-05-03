@@ -21,11 +21,13 @@ from app.modules.automation.adapters.external_apply.base import (
     detect_form_errors,
     fill_input,
     find_visible,
-    upload_resume,
-)
+    upload_resume,)
+
+from app.modules.automation.ports.external_apply import AtsHandler
 
 
-class GreenhouseHandler:
+
+class GreenhouseHandler(AtsHandler):
     name = "greenhouse"
 
     def can_handle(self, url: str) -> bool:

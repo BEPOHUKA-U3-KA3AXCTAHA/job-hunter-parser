@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from loguru import logger
 
@@ -21,25 +19,23 @@ from loguru import logger
 RESUME_PATH = Path(__file__).resolve().parents[5] / "resume_en.pdf"
 
 
-@dataclass(slots=True)
-class AtsContext:
-    """Per-job context handed to each ATS handler.
+# AtsContext / AtsResult / AtsHandler now live in the port module.
+from app.modules.automation.ports.external_apply import (  # noqa: E402,F401
+    AtsContext as _PortAtsContext,
+    AtsResult,
+    AtsHandler,
+)
 
-    Profile fields are populated by `load_ats_context()` from the `users.info`
-    free-form text in the DB — single source of truth, never hardcode here.
-    """
 
-    company: str
-    job_title: str
-    job_url: str        # the LinkedIn job URL we came from (for logs)
-    ats_url: str        # the external URL the Apply button took us to
-    profile_first_name: str = ""
-    profile_last_name: str = ""
-    profile_email: str = ""
-    profile_phone: str = ""
-    profile_location: str = ""
-    profile_linkedin: str = ""
-    resume_path: Path = RESUME_PATH
+def _make_ats_context(**kwargs) -> _PortAtsContext:
+    """Factory that injects the project-wide RESUME_PATH default."""
+    kwargs.setdefault("resume_path", RESUME_PATH)
+    return _PortAtsContext(**kwargs)
+
+
+# Re-export the port's AtsContext under the original name so existing
+# `from .base import AtsContext` callers keep working.
+AtsContext = _PortAtsContext
 
 
 def _parse_profile(info: str) -> dict[str, str]:
@@ -98,8 +94,8 @@ def load_ats_context(
     All profile fields come from the DB — the only ground truth. If the user
     record is missing a field, it stays empty and the handler skips it.
     """
-    from app.modules.users.models.candidate_profile import _load_user_info  # avoid cycle
-    info = _load_user_info()
+    from app.modules.users import load_user_info
+    info = load_user_info()
     p = _parse_profile(info)
     if not p:
         logger.warning("load_ats_context: users.info empty or unparseable")
@@ -112,28 +108,6 @@ def load_ats_context(
         profile_location=p.get("location", ""),
         profile_linkedin=p.get("linkedin", ""),
     )
-
-
-@dataclass(slots=True)
-class AtsResult:
-    """Outcome of one external ATS apply attempt."""
-
-    success: bool
-    detail: str = ""
-    pages: int = 0
-    fields_filled: int = 0
-    ats_name: str = ""
-
-
-@runtime_checkable
-class AtsHandler(Protocol):
-    """One concrete handler per ATS family."""
-
-    name: str  # 'greenhouse' / 'lever' / 'ashby' / 'workday' / 'generic'
-
-    def can_handle(self, url: str) -> bool: ...
-
-    def apply(self, driver, ctx: AtsContext) -> AtsResult: ...
 
 
 # --- Common DOM helpers reused across handlers ---

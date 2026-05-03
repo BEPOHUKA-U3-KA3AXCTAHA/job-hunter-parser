@@ -26,23 +26,24 @@ _CONCURRENCY = 4
 _TIMEOUT = 20
 
 
-def _default_repo() -> CompanyRepository:
+def _default_uow_factory():
     """Lazy default — keeps the SQLA import out of module-load."""
-    from app.modules.companies.adapters.repository.sqla import SqlaCompanyRepository
-    return SqlaCompanyRepository()
+    from app.modules.companies import default_uow
+    return default_uow
 
 
 async def enrich_jobs_by_id(
     job_ids: list[UUID],
-    repo: CompanyRepository | None = None,
+    uow_factory=None,
 ) -> dict:
     """Fetch detail pages for the given jobs, extract apply_email, persist.
 
     Returns {hit, miss, http_err, no_url, already_set}.
-    `repo` is the CompanyRepository port; defaults to SQLA-backed impl.
+    `uow_factory` returns a CompaniesUoW; defaults to SQLA-backed impl.
     """
-    repo = repo or _default_repo()
-    targets = await repo.load_apply_targets(job_ids)
+    uow_factory = uow_factory or _default_uow_factory()
+    async with uow_factory() as _read_uow:
+        targets = await _read_uow.companies.load_apply_targets(job_ids)
 
     sem = asyncio.Semaphore(_CONCURRENCY)
     stats = {"hit": 0, "miss": 0, "http_err": 0, "no_url": 0, "already_set": 0}
@@ -74,8 +75,10 @@ async def enrich_jobs_by_id(
 
     fetched = await asyncio.gather(*[one(t) for t in targets])
 
-    for jp_id, em in fetched:
-        if em:
-            await repo.set_apply_email(jp_id, em)
+    async with uow_factory() as _write_uow:
+        for jp_id, em in fetched:
+            if em:
+                await _write_uow.companies.set_apply_email(jp_id, em)
+        await _write_uow.commit()
 
     return stats

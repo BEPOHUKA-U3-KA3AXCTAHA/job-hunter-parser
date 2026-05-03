@@ -26,7 +26,7 @@ from app.modules.applies.ports import (
     QACacheRepository,
 )
 from app.modules.applies.ports.mass_apply import MassApplyRepository, PendingOutreach
-from app.modules.applies.ports.unit_of_work import UnitOfWork
+from app.modules.applies.ports.applies_uow import AppliesUoW
 from app.modules.applies.services.answer_questions import (
     FormAnswer,
     FormQuestion,
@@ -36,11 +36,19 @@ from app.modules.applies.services.curate import CuratedPair, filter_and_score
 from app.modules.applies.services.score import RelevanceScorer
 
 
-def default_uow() -> UnitOfWork:
+def get_claude_cli_pool(**kwargs):  # noqa: ANN201,ANN003
+    """Composition-root helper — returns the production Claude CLI pool.
+    Wraps the LLM adapter constructor without making cross-module callers
+    reach into `applies/adapters/llm/`."""
+    from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
+    return ClaudeCLIPool(**kwargs)
+
+
+def default_uow() -> AppliesUoW:
     """Composition-root helper: instantiate the production SQLA UoW.
     Tests / alt-impl callers pass their own UoW instead."""
-    from app.modules.applies.adapters.unit_of_work.sqla import SqlaUnitOfWork
-    return SqlaUnitOfWork()
+    from app.modules.applies.adapters.applies_uow.sqla import SqlaAppliesUoW
+    return SqlaAppliesUoW()
 
 
 __all__ = [
@@ -50,10 +58,11 @@ __all__ = [
     # ports
     "ApplyRepository", "CandidateBundle", "CandidateBundleRepository",
     "LLMGenerator", "MassApplyRepository", "PendingOutreach", "QACacheRepository",
-    "UnitOfWork",
+    "AppliesUoW",
     # services (use cases)
     "CuratedPair", "FormAnswer", "FormQuestion", "RelevanceScorer",
     "answer_questions", "filter_and_score",
     # composition-root helpers
     "default_uow",
+    "get_claude_cli_pool",
 ]
