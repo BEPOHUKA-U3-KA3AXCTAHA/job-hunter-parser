@@ -39,8 +39,14 @@ def err(path: Path, msg: str) -> None:
 # ---------- Rule 3: adapter folder = port name ----------
 
 def check_rule_3() -> None:
-    """Each adapter file under adapters/<X>/<impl>.py must pair with a
-    port file ports/<X>.py in the same module."""
+    """Adapter folder name == port file stem, AND every class defined in
+    an adapter file must inherit from a class declared in the matching
+    port file. Catches both:
+      a) adapters/<X>/ with no matching ports/<X>.py
+      b) adapters/<X>/<impl>.py defining a class that doesn't inherit
+         from any Protocol from ports/<X>.py (i.e., the file is in the
+         wrong adapter folder).
+    """
     for module_dir in MODULES.iterdir():
         if not module_dir.is_dir():
             continue
@@ -48,17 +54,85 @@ def check_rule_3() -> None:
         ports = module_dir / "ports"
         if not adapters.is_dir() or not ports.is_dir():
             continue
-        port_stems = {p.stem for p in ports.glob("*.py") if p.name != "__init__.py"}
+        port_files: dict[str, set[str]] = {}
+        for p in ports.glob("*.py"):
+            if p.name == "__init__.py":
+                continue
+            try:
+                tree = ast.parse(p.read_text())
+            except SyntaxError:
+                continue
+            port_files[p.stem] = {
+                node.name for node in tree.body if isinstance(node, ast.ClassDef)
+            }
+        port_stems = set(port_files)
+
         for adapter_subdir in adapters.iterdir():
             if not adapter_subdir.is_dir() or adapter_subdir.name == "__pycache__":
                 continue
             stem = adapter_subdir.name
+            # 3a — folder must have a matching port.
             if stem not in port_stems:
                 err(
                     adapter_subdir,
                     f"Rule 3: adapter folder '{stem}' has no matching port "
                     f"file '{module_dir.name}/ports/{stem}.py'",
                 )
+                continue
+            allowed_bases = set(port_files[stem])
+            # Also accept inheritance from any class defined in a sibling
+            # file inside the same adapter folder — e.g. an `llm/base.py`
+            # that implements the port and is then extended by
+            # `llm/anthropic.py`. Walk all sibling files to collect
+            # those names too.
+            sibling_classes: set[str] = set()
+            for f in adapter_subdir.glob("*.py"):
+                if f.name == "__init__.py":
+                    continue
+                try:
+                    tree = ast.parse(f.read_text())
+                except SyntaxError:
+                    continue
+                for node in tree.body:
+                    if isinstance(node, ast.ClassDef):
+                        sibling_classes.add(node.name)
+            allowed_bases |= sibling_classes
+
+            # 3b — every NON-DTO class in each adapter file must inherit
+            #      transitively from a port Protocol. Classes with no base
+            #      at all (dataclasses, NamedTuples, utility/result types)
+            #      are exempt — they're DTOs, not adapters.
+            for f in adapter_subdir.glob("*.py"):
+                if f.name == "__init__.py":
+                    continue
+                try:
+                    tree = ast.parse(f.read_text())
+                except SyntaxError:
+                    continue
+                for node in tree.body:
+                    if not isinstance(node, ast.ClassDef):
+                        continue
+                    if node.name.startswith("_"):
+                        continue
+                    base_names = []
+                    for b in node.bases:
+                        if isinstance(b, ast.Name):
+                            base_names.append(b.id)
+                        elif isinstance(b, ast.Attribute):
+                            base_names.append(b.attr)
+                    if not base_names:
+                        # Pure DTO / utility (no inheritance) — fine.
+                        continue
+                    if not any(b in allowed_bases for b in base_names):
+                        err(
+                            f,
+                            f"Rule 3: class {node.name} inherits from "
+                            f"{base_names} but adapter folder '{stem}' "
+                            f"requires a base from ports/{stem}.py "
+                            f"({sorted(port_files[stem])}) or a sibling "
+                            f"file in the same folder — move this file "
+                            f"to the correct adapters/<port>/ folder",
+                        )
 
 
 # ---------- Rule 6: ORM tables only in infra/db/tables/ ----------

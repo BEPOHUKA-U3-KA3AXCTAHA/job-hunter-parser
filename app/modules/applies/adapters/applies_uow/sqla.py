@@ -14,13 +14,13 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db import get_session_maker
-from app.modules.applies.adapters.repository.candidates import (
+from app.modules.applies.adapters.candidates.sqla import (
     SqlaCandidateBundleRepository,
 )
-from app.modules.applies.adapters.repository.mass_apply import (
+from app.modules.applies.adapters.mass_apply.sqla import (
     SqlaMassApplyRepository,
 )
-from app.modules.applies.adapters.repository.qa_cache import (
+from app.modules.applies.adapters.qa_cache.sqla import (
     SqlaQACacheRepository,
 )
 from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
