@@ -55,7 +55,7 @@ async def run_pipeline(
     channel: MessageChannel = MessageChannel.LINKEDIN,
     output_csv: str = "messages_full.csv",
     skip_fresh_days: int = 30,
-    repo: ApplyRepository | None = None,
+    uow_factory=None,
 ) -> list[PipelineResult]:
     """Runs the full pipeline.
 
@@ -101,8 +101,9 @@ async def run_pipeline(
         dms_for_company: list = []
 
         # Check cache first
-        if repo and skip_fresh_days > 0:
-            cached = await repo.get_fresh_contacts(company.name, skip_fresh_days)
+        if uow_factory and skip_fresh_days > 0:
+            async with uow_factory() as _uow:
+                cached = await _uow.apply.get_fresh_contacts(company.name, skip_fresh_days)
             if cached:
                 dms_for_company = cached
                 cache_hits += 1
@@ -167,55 +168,46 @@ async def run_pipeline(
 
     console.print(f"  [green]Generated {generated_count} message bodies[/]")
 
-    # Save to DB
-    if repo:
+    # Save to DB — one UoW for the whole step (messages + bodyless + jobs +
+    # scan marks all need to be consistent with each other).
+    if uow_factory:
         console.print("\n[bold cyan]Saving to DB...[/]")
         try:
-            # Only persist messages whose body has been generated.
-            # Bodyless messages = just an enrichment record on the contact, kept in CSV but not in DB.
             real_messages = [
                 m for m in messages
                 if m.decision_maker.full_name != "Unknown (find manually)" and m.body
             ]
-            await repo.save_many(real_messages)
-
-            # Persist company+contact rows for messages that had no body generated
-            # (no LLM key, or LLM call failed). save_many already covered the bodied ones.
-            # Without this, job postings would have no company FK target on cold runs.
             bodyless = [
                 m for m in messages
                 if m.decision_maker.full_name != "Unknown (find manually)" and not m.body
             ]
-            from app.infra.db import get_session_maker
-            if bodyless:
-                from app.modules.applies.adapters.repository.sqla import _upsert_company, _upsert_decision_maker
-                Session = get_session_maker()
-                async with Session() as session:
+            async with uow_factory() as uow:
+                await uow.apply.save_many(real_messages)
+
+                # Persist company+contact rows for messages whose body wasn't
+                # generated. Otherwise job postings would have no company FK
+                # target on cold runs.
+                if bodyless:
                     for m in bodyless:
-                        comp_row = await _upsert_company(session, m.company)
-                        await _upsert_decision_maker(session, comp_row, m.decision_maker)
-                    await session.commit()
+                        await uow.apply.upsert_company_with_dm(m.company, m.decision_maker)
 
-            # Persist job postings, linked back to companies by name
-            from app.infra.db.tables.companies import CompanyRow
-            from sqlalchemy import select
-            async with Session() as session:
-                names = {c.name for c in companies}
-                result = await session.execute(select(CompanyRow).where(CompanyRow.name.in_(names)))
-                name_to_id = {r.name: r.id for r in result.scalars()}
-            new_jobs = await repo.save_job_postings(job_postings, name_to_id)
+                # Resolve company name -> id mapping for job postings.
+                name_to_id = await uow.apply.company_name_to_id(
+                    [c.name for c in companies]
+                )
+                new_jobs = await uow.apply.save_job_postings(job_postings, name_to_id)
 
-            # Mark companies whose DM scan happened this run, so freshness cache works next run
-            for n in dm_scanned_company_names:
-                try:
-                    await repo.mark_dm_scan_done(n)
-                except Exception as e:
-                    logger.debug("mark_dm_scan_done failed for {}: {}", n, e)
+                for n in dm_scanned_company_names:
+                    try:
+                        await uow.apply.mark_dm_scan_done(n)
+                    except Exception as e:
+                        logger.debug("mark_dm_scan_done failed for {}: {}", n, e)
 
-            total_messages = await repo.count()
-            console.print(
-                f"  [green]DB: {total_messages} messages, +{new_jobs} new jobs, marked {len(dm_scanned_company_names)} companies as dm-scanned[/]"
-            )
+                total_messages = await uow.apply.count()
+                await uow.commit()
+                console.print(
+                    f"  [green]DB: {total_messages} messages, +{new_jobs} new jobs, marked {len(dm_scanned_company_names)} companies as dm-scanned[/]"
+                )
         except Exception as e:
             console.print(f"  [red]DB save failed: {e}[/]")
 

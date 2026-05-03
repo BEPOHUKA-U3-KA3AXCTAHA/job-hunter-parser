@@ -219,7 +219,7 @@ def hunt(
     Secrets (API keys) come from .env. App config from config.toml.
     """
     from app.infra.config import get_secrets, load_app_config
-    from app.modules.applies import MessageChannel, _legacy_apply_repo
+    from app.modules.applies import MessageChannel, default_uow
     from app.entrypoints.cli.pipeline import run_pipeline
     from app.modules.companies import SearchCriteria
     from app.modules.users import CandidateProfile
@@ -323,7 +323,7 @@ def hunt(
             channel=ch,
             output_csv=output,
             skip_fresh_days=eff_skip_fresh,
-            repo=_legacy_apply_repo(),  # TODO: migrate pipeline to UoW
+            uow_factory=default_uow,
         )
 
     asyncio.run(_run())
@@ -644,31 +644,26 @@ def retry(
 
     Bumps attempt_no on each. Use after status=no_reply to re-target stale leads.
     """
-    from sqlalchemy import select
-    from app.infra.db import get_session_maker
-    from app.infra.db.tables.applies import ApplyRow
     from app.infra.db import init_db
-    from app.modules.applies import _legacy_apply_repo
+    from app.modules.applies import default_uow
 
     async def _run():
         await init_db()
-        repo = _legacy_apply_repo()  # TODO: migrate retry cmd to UoW
-        Session = get_session_maker()
         created = 0
-        async with Session() as session:
-            # Find existing leads with given status, only the latest attempt per dm
-            result = await session.execute(
-                select(ApplyRow).where(ApplyRow.status == status).limit(limit)
-            )
-            leads = result.scalars().all()
+        async with default_uow() as uow:
+            leads = await uow.apply.list_by_status(status, limit=limit)
             console.print(f"Found {len(leads)} leads with status='{status}'")
-
-            for old_lead in leads:
-                new_lead = await repo.create_retry(old_lead.decision_maker_id, score=old_lead.relevance_score)
+            for old in leads:
+                new_lead = await uow.apply.create_retry(
+                    old.decision_maker_id, score=old.relevance_score,
+                )
                 if new_lead:
                     created += 1
-                    console.print(f"  → new attempt #{new_lead.attempt_no} for dm {old_lead.decision_maker_id}")
-
+                    console.print(
+                        f"  → new attempt #{new_lead.attempt_no} for dm "
+                        f"{old.decision_maker_id}"
+                    )
+            await uow.commit()
         console.print(f"\n[green]Created {created} retry leads[/]")
 
     asyncio.run(_run())
@@ -690,8 +685,7 @@ def curate(
     most contacts). Letters land in messages keyed by (job_posting_id, dm_id, attempt_no=1).
     """
     from app.infra.config import get_secrets
-    from app.infra.db import get_session_maker, init_db
-    from app.modules.applies.adapters.repository.sqla import _upsert_message
+    from app.infra.db import init_db
     from app.modules.applies import Message, MessageChannel, MessageStatus
     from app.modules.applies import default_uow, filter_and_score
     from app.modules.users import CandidateProfile
@@ -779,7 +773,6 @@ def curate(
             llm = ClaudeLLMAdapter(secrets.anthropic_api_key)
         console.print(f"[green]LLM: {llm.__class__.__name__} ({llm.model_name})[/]")
 
-        Session = get_session_maker()
         rows_for_csv: list[dict] = []
         saved = 0
         for i, p in enumerate(pairs, 1):
@@ -801,9 +794,9 @@ def curate(
                 continue
             msg.body = body
 
-            async with Session() as session:
-                row = await _upsert_message(session, p.dm.id, msg)
-                await session.commit()
+            async with default_uow() as uow:
+                await uow.apply.save(msg)
+                await uow.commit()
             saved += 1
 
             rows_for_csv.append({

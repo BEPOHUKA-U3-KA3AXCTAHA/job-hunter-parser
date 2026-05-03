@@ -43,38 +43,6 @@ def default_uow() -> UnitOfWork:
     return SqlaUnitOfWork()
 
 
-def _legacy_apply_repo() -> ApplyRepository:
-    """DEPRECATED — for `pipeline` / `curate` / `retry` CLI commands that
-    haven't been migrated to UoW yet. Opens its own session per call,
-    bypassing the UoW pattern. Will be removed once those commands are
-    refactored.
-
-    DO NOT USE in services or new code.
-    """
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    from app.infra.db import get_session_maker
-    from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
-
-    class _PerCallShim:
-        """Each method call opens its own session and commits — restores
-        the pre-UoW behavior for legacy callers."""
-
-        def __getattr__(self, name: str):
-            method = getattr(SqliteApplyRepository, name)
-
-            async def _wrap(*args, **kwargs):
-                Session = get_session_maker()
-                async with Session() as session:
-                    real = SqliteApplyRepository(session)
-                    result = await method(real, *args, **kwargs)
-                    await session.commit()
-                    return result
-            return _wrap
-
-    return _PerCallShim()
-
-
 __all__ = [
     # entities
     "Apply", "ApplyChannel", "ApplyFlank", "ApplyMethod", "ApplyNotFound", "ApplyStatus",
@@ -88,5 +56,4 @@ __all__ = [
     "answer_questions", "filter_and_score",
     # composition-root helpers
     "default_uow",
-    "_legacy_apply_repo",
 ]

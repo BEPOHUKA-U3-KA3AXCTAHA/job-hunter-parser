@@ -49,20 +49,17 @@ class SqliteApplyRepository(ApplyRepository):
         saved_messages = 0
 
         for msg in messages:
-            company_row = await _upsert_company(session, msg.company)
+            company_row = await _upsert_company(self._s, msg.company)
             if company_row._is_new:
                 saved_companies += 1
 
-            dm_row = await _upsert_decision_maker(session, company_row, msg.decision_maker)
+            dm_row = await _upsert_decision_maker(self._s, company_row, msg.decision_maker)
             if dm_row._is_new:
                 saved_dms += 1
 
-            msg_row = await _upsert_message(session, dm_row.id, msg)
+            msg_row = await _upsert_message(self._s, dm_row.id, msg)
             if msg_row._is_new:
                 saved_messages += 1
-
-        await session.commit()
-
         logger.info(
             "DB saved: {} new companies, {} new contacts, {} new messages",
             saved_companies, saved_dms, saved_messages,
@@ -70,7 +67,7 @@ class SqliteApplyRepository(ApplyRepository):
 
     async def create_retry(self, dm_id: UUID, score: int = 0) -> ApplyRow | None:
         """Create a new attempt for an existing dm. attempt_no = max+1."""
-        result = await session.execute(
+        result = await self._s.execute(
             select(ApplyRow).where(ApplyRow.decision_maker_id == dm_id).order_by(ApplyRow.attempt_no.desc())
         )
         existing = result.scalars().first()
@@ -82,8 +79,7 @@ class SqliteApplyRepository(ApplyRepository):
             relevance_score=score or existing.relevance_score,
             status="new",
         )
-        session.add(row)
-        await session.commit()
+        self._s.add(row)
         return row
 
     async def get_fresh_contacts(
@@ -98,7 +94,7 @@ class SqliteApplyRepository(ApplyRepository):
             return None
 
         cutoff = datetime.utcnow() - timedelta(days=max_age_days)
-        comp_result = await session.execute(
+        comp_result = await self._s.execute(
             select(CompanyRow).where(CompanyRow.name == company_name)
         )
         comp_row = comp_result.scalar_one_or_none()
@@ -107,7 +103,7 @@ class SqliteApplyRepository(ApplyRepository):
         if comp_row.last_dm_scan_at < cutoff:
             return None
 
-        dm_result = await session.execute(
+        dm_result = await self._s.execute(
             select(DecisionMakerRow).where(DecisionMakerRow.company_id == comp_row.id)
         )
         dm_rows = dm_result.scalars().all()
@@ -118,47 +114,64 @@ class SqliteApplyRepository(ApplyRepository):
 
     async def mark_dm_scan_done(self, company_name: str) -> None:
         """Update company.last_dm_scan_at = now after a successful TheOrg/Apollo scan."""
-        result = await session.execute(
+        result = await self._s.execute(
             select(CompanyRow).where(CompanyRow.name == company_name)
         )
         row = result.scalar_one_or_none()
         if row:
             row.last_dm_scan_at = datetime.utcnow()
-            await session.commit()
-
     async def get_by_id(self, message_id: UUID) -> Message | None:
-        result = await session.execute(
+        result = await self._s.execute(
             select(ApplyRow).where(ApplyRow.id == message_id)
         )
         row = result.scalar_one_or_none()
         if row is None:
             return None
-        return await _row_to_message(session, row)
+        return await _row_to_message(self._s, row)
 
     async def find_by_status(self, status: MessageStatus) -> AsyncIterator[Message]:
-        result = await session.execute(
+        result = await self._s.execute(
             select(ApplyRow).where(ApplyRow.status == status.value)
         )
         for row in result.scalars():
-            yield await _row_to_message(session, row)
+            yield await _row_to_message(self._s, row)
 
     async def find_worth_outreach(self, min_score: int = 60) -> AsyncIterator[Message]:
-        result = await session.execute(
+        result = await self._s.execute(
             select(ApplyRow).where(ApplyRow.relevance_score >= min_score)
         )
         for row in result.scalars():
-            yield await _row_to_message(session, row)
+            yield await _row_to_message(self._s, row)
 
     async def update_status(self, message_id: UUID, status: MessageStatus) -> None:
-        result = await session.execute(select(ApplyRow).where(ApplyRow.id == message_id))
+        result = await self._s.execute(select(ApplyRow).where(ApplyRow.id == message_id))
         row = result.scalar_one_or_none()
         if row:
             row.status = status.value
-            await session.commit()
-
     async def count(self) -> int:
-        result = await session.execute(select(func.count(ApplyRow.id)))
+        result = await self._s.execute(select(func.count(ApplyRow.id)))
         return result.scalar() or 0
+
+    async def list_by_status(self, status: str, limit: int = 50) -> list[ApplyRow]:
+        result = await self._s.execute(
+            select(ApplyRow).where(ApplyRow.status == status).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def upsert_company_with_dm(self, company: Company, dm: DecisionMaker) -> None:
+        """Persist a (company, dm) pair without an apply — pipeline path for
+        when LLM didn't generate a body but enrichment did happen."""
+        comp_row = await _upsert_company(self._s, company)
+        await _upsert_decision_maker(self._s, comp_row, dm)
+
+    async def company_name_to_id(self, names: list[str]) -> dict[str, UUID]:
+        """Batch-resolve company names → row IDs in one SELECT."""
+        if not names:
+            return {}
+        result = await self._s.execute(
+            select(CompanyRow).where(CompanyRow.name.in_(names))
+        )
+        return {r.name: r.id for r in result.scalars()}
 
     async def save_job_postings(self, postings: list, company_name_to_id: dict) -> int:
         """Persist job postings, dedup by source_url. Returns count of new rows.
@@ -177,7 +190,7 @@ class SqliteApplyRepository(ApplyRepository):
         for jp in postings:
             if not jp.source_url:
                 continue
-            result = await session.execute(
+            result = await self._s.execute(
                 select(JobPostingRow).where(JobPostingRow.source_url == jp.source_url)
             )
             row = result.scalar_one_or_none()
@@ -187,7 +200,7 @@ class SqliteApplyRepository(ApplyRepository):
             jp_name = getattr(jp, "company_name", "") or ""
             company_id = name_to_id.get(jp_name)
             if company_id is None and jp_name:
-                company_id = await _upsert_company_stub(session, jp_name, jp.source, jp.location)
+                company_id = await _upsert_company_stub(self._s, jp_name, jp.source, jp.location)
                 name_to_id[jp_name] = company_id
 
             if row:
@@ -223,9 +236,8 @@ class SqliteApplyRepository(ApplyRepository):
                     last_seen_at=now,
                     is_active=True,
                 )
-                session.add(row)
+                self._s.add(row)
                 new_count += 1
-        await session.commit()
         return new_count
 
 
