@@ -102,12 +102,26 @@ def run(url: str):
             time.sleep(2)
         if not result:
             logger.error("Timed out waiting for extension result (240s)")
-        # Save final screenshot
+        # Save final screenshot + HTML + extension action dumps for post-mortem
         try:
             driver.save_screenshot("/tmp/jhp_diag/extension_final.png")
-            logger.info("screenshot /tmp/jhp_diag/extension_final.png")
-        except Exception:
-            pass
+            html = driver.execute_script("return document.documentElement.outerHTML")
+            with open("/tmp/jhp_diag/extension_final.html", "w") as f:
+                f.write(html or "")
+            for k in ("actions", "results"):
+                for n in (1, 2, 3):
+                    try:
+                        v = driver.execute_script(
+                            f"return sessionStorage.getItem('jhp-{k}-{n}');"
+                        )
+                        if v:
+                            with open(f"/tmp/jhp_diag/jhp_{k}_{n}.json", "w") as f:
+                                f.write(v)
+                    except Exception:
+                        pass
+            logger.info("artifacts /tmp/jhp_diag/extension_final.{png,html} + jhp_{actions,results}_*.json")
+        except Exception as e:
+            logger.warning("artifact save failed: {}", e)
         logger.info("Leaving browser open 30s for inspection")
         time.sleep(30)
     finally:
