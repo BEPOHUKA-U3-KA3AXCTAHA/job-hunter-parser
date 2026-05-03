@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from app.shared import Seniority, TechStack
+from app.modules.companies.models.seniority import Seniority
+from app.modules.companies.models.tech_stack import TechStack
 
 
 @dataclass(slots=True)

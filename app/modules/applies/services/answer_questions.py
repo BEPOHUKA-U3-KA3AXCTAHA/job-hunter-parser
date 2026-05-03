@@ -19,7 +19,7 @@ from loguru import logger
 
 from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
 from app.modules.applies.ports.qa_cache import QACacheRepository
-from app.shared import CandidateProfile
+from app.modules.users import CandidateProfile
 
 QuestionType = Literal["text", "number", "tel", "email", "textarea", "select", "radio", "checkbox"]
 

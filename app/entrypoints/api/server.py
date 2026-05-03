@@ -165,7 +165,7 @@ async def fill_plan(req: FillPlanRequest) -> FillPlanResponse:
     from app.modules.automation.services.page_filler import (
         ask_claude_for_fill_plan, snapshot_form_html,
     )
-    from app.shared.candidate_profile import CandidateProfile
+    from app.modules.users.models.candidate_profile import CandidateProfile
 
     # Browser already sent the HTML — we don't need to scrape again, but we
     # still want to apply the same cleanup (drop scripts/styles/long classes)

@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright
 
 from app.modules.companies.models import Company, JobPosting
 from app.modules.companies.ports import CompanySource
-from app.shared import SearchCriteria, Seniority, TechStack
+from app.modules.companies import SearchCriteria, Seniority, TechStack
 
 _URL = "https://rustjobs.dev/locations/remote"
 

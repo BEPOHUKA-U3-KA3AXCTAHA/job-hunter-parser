@@ -14,7 +14,7 @@ from app.infra.db.tables.people import DecisionMakerRow
 from app.modules.applies.ports.candidates import CandidateBundle
 from app.modules.companies import Company, JobPosting
 from app.modules.people import DecisionMaker, DecisionMakerRole
-from app.shared import Seniority, TechStack
+from app.modules.companies import Seniority, TechStack
 
 
 def _safe_role(role_str: str) -> DecisionMakerRole:

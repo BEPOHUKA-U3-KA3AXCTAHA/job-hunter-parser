@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.modules.companies import Company
 from app.modules.people import DecisionMaker
-from app.shared import TechStack
+from app.modules.companies import TechStack
 
 
 class RelevanceScorer:

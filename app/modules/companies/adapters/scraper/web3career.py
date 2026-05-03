@@ -11,7 +11,7 @@ from loguru import logger
 
 from app.modules.companies.models import Company, JobPosting
 from app.modules.companies.ports import CompanySource
-from app.shared import SearchCriteria, Seniority, TechStack
+from app.modules.companies import SearchCriteria, Seniority, TechStack
 
 _BASE_URL = "https://web3.career"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (job-hunter-parser/0.1)"}

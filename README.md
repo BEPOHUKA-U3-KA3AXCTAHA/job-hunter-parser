@@ -49,10 +49,6 @@ job-hunter-parser/
 │   │           ├── people.py             # DecisionMakerRow
 │   │           └── applies.py            # ApplyRow
 │   │
-│   └── shared/                           # truly cross-domain value objects
-│                                         # (Email, LinkedInUrl, TechStack, Seniority,
-│                                         #  SearchCriteria, CandidateProfile)
-│
 ├── firefox-extension/                    # WebExtension client of app/entrypoints/api/server.py
 ├── scripts/                              # one-off diagnostic/debug scripts
 ├── pyproject.toml                        # `jhp = "app.entrypoints.cli.main:app"`

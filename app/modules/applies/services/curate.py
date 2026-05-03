@@ -18,7 +18,8 @@ from loguru import logger
 from app.modules.applies.ports.candidates import CandidateBundle
 from app.modules.companies import Company, JobPosting
 from app.modules.people import DecisionMaker, DecisionMakerRole
-from app.shared import CandidateProfile, TechStack
+from app.modules.companies import TechStack
+from app.modules.users import CandidateProfile
 
 # Junk-keyword skip list — title-level. We only message backend/eng roles.
 _TITLE_HARD_REJECT = {

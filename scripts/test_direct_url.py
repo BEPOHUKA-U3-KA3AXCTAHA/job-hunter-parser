@@ -24,7 +24,7 @@ from app.modules.automation.adapters.selenium_bot import (
     selenium_firefox, stealth_navigate, has_cloudflare_challenge,
     solve_cloudflare_checkbox,
 )
-from app.shared.candidate_profile import CandidateProfile
+from app.modules.users.models.candidate_profile import CandidateProfile
 
 
 def _looks_like_success(driver) -> bool:

@@ -58,7 +58,7 @@ def scrape(
     """Scrape companies from a source."""
 
     async def _run():
-        from app.shared import SearchCriteria
+        from app.modules.companies import SearchCriteria
         scraper = _get_scraper(source)
         criteria = SearchCriteria(tech_stack=tech or ["python", "rust"], limit_per_source=limit)
 
@@ -109,7 +109,7 @@ def jobs(
     """List job postings from a source."""
 
     async def _run():
-        from app.shared import SearchCriteria
+        from app.modules.companies import SearchCriteria
         scraper = _get_scraper(source)
         criteria = SearchCriteria(tech_stack=tech or ["python", "rust"], limit_per_source=limit)
 
@@ -166,7 +166,7 @@ def scrape_all(
     """Scrape jobs from ALL sources at once and save to one CSV."""
 
     async def _run():
-        from app.shared import SearchCriteria
+        from app.modules.companies import SearchCriteria
         all_rows: list[dict] = []
         criteria = SearchCriteria(tech_stack=tech or ["python", "rust"], limit_per_source=limit)
 
@@ -222,7 +222,8 @@ def hunt(
     from app.modules.applies import MessageChannel
     from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
     from app.entrypoints.cli.pipeline import run_pipeline
-    from app.shared import CandidateProfile, SearchCriteria
+    from app.modules.companies import SearchCriteria
+    from app.modules.users import CandidateProfile
 
     secrets = get_secrets()
     app_config = load_app_config()
@@ -696,7 +697,7 @@ def curate(
     from app.modules.applies.adapters.repository.sqla import _upsert_message
     from app.modules.applies import Message, MessageChannel, MessageStatus
     from app.modules.applies import filter_and_score
-    from app.shared import CandidateProfile
+    from app.modules.users import CandidateProfile
 
     async def _run():
         await init_db()

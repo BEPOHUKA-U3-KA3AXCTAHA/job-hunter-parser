@@ -17,7 +17,8 @@ from app.modules.applies import LLMGenerator, ApplyRepository
 from app.modules.applies import RelevanceScorer
 from app.modules.people import DecisionMakerRole
 from app.modules.people import ContactEnrichment, DecisionMakerSearch
-from app.shared import CandidateProfile, SearchCriteria, TechStack
+from app.modules.companies import SearchCriteria, TechStack
+from app.modules.users import CandidateProfile
 
 console = Console()
 

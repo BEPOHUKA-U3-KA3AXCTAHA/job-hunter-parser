@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from app.shared import Email, LinkedInUrl
+from app.modules.people.models.email import Email
+from app.modules.people.models.linkedin_url import LinkedInUrl
 
 
 class DecisionMakerRole(StrEnum):

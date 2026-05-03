@@ -24,7 +24,7 @@ from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.modules.companies import Company
 from app.infra.db.tables.people import DecisionMakerRow
 from app.modules.people import DecisionMaker, DecisionMakerRole
-from app.shared import TechStack
+from app.modules.companies import TechStack
 
 
 class SqliteApplyRepository(ApplyRepository):

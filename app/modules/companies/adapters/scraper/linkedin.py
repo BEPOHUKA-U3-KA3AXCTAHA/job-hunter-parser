@@ -13,7 +13,7 @@ from loguru import logger
 
 from app.modules.companies.models import Company, JobPosting
 from app.modules.companies.ports import CompanySource
-from app.shared import SearchCriteria, Seniority
+from app.modules.companies import SearchCriteria, Seniority
 
 _BASE_URL = "https://www.linkedin.com/jobs/search/"
 _HEADERS = {

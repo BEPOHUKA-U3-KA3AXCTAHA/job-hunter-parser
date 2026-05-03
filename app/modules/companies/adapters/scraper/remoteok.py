@@ -10,7 +10,7 @@ from loguru import logger
 from app.modules.companies.services.email_extract import extract_apply_email
 from app.modules.companies.models import Company, JobPosting
 from app.modules.companies.ports import CompanySource
-from app.shared import SearchCriteria, Seniority, TechStack
+from app.modules.companies import SearchCriteria, Seniority, TechStack
 
 _API_URL = "https://remoteok.com/api"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (job-hunter-parser/0.1)"}

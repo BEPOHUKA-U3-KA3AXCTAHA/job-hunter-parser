@@ -98,7 +98,7 @@ def load_ats_context(
     All profile fields come from the DB — the only ground truth. If the user
     record is missing a field, it stays empty and the handler skips it.
     """
-    from app.shared.candidate_profile import _load_user_info  # avoid cycle
+    from app.modules.users.models.candidate_profile import _load_user_info  # avoid cycle
     info = _load_user_info()
     p = _parse_profile(info)
     if not p:

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from typing import Protocol, runtime_checkable
 
 from app.modules.companies.models import Company, JobPosting
-from app.shared import SearchCriteria
+from app.modules.companies import SearchCriteria
 
 
 @runtime_checkable

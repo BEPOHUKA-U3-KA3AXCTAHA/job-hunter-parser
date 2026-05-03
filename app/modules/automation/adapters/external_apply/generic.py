@@ -348,7 +348,7 @@ class GenericHandler:
                 from app.modules.automation.services.page_filler import (
                     fill_form_via_page_snapshot,
                 )
-                from app.shared.candidate_profile import CandidateProfile
+                from app.modules.users.models.candidate_profile import CandidateProfile
                 profile = CandidateProfile()
                 logger.info("generic[{}] attempt {}: page-snapshot Claude pass",
                             host, attempt + 1)
