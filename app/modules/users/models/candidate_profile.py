@@ -18,7 +18,7 @@ from pathlib import Path
 def _load_cv_text() -> str:
     """Extract full CV text from resume_en.pdf at the project root.
     Returns empty string if the file is missing — tests work without it."""
-    cv_path = Path(__file__).resolve().parents[2] / "resume_en.pdf"
+    cv_path = Path(__file__).resolve().parents[4] / "resume_en.pdf"
     if not cv_path.exists():
         return ""
     try:
@@ -42,7 +42,7 @@ def load_user_info() -> str:
     """
     try:
         import sqlite3
-        db = Path(__file__).resolve().parents[2] / "jhp.db"
+        db = Path(__file__).resolve().parents[4] / "jhp.db"
         if not db.exists():
             return ""
         con = sqlite3.connect(str(db))

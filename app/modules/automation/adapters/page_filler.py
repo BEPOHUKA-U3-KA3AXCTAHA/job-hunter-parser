@@ -1,11 +1,11 @@
-"""Page-snapshot LLM form filler.
+"""Page-snapshot LLM form filler (Camoufox/Playwright async).
 
 When the field-by-field heuristic + per-field LLM pipeline can't finish
 a form (some custom combobox, weird widget, missed label), fall back to:
   1. Snapshot the rendered form HTML.
   2. Hand it to Claude Sonnet with the user profile.
   3. Get back a JSON action list: [{action, selector, value}, ...].
-  4. Execute each action via Selenium.
+  4. Execute each action via Playwright Page (Camoufox-backed).
 
 This is the "let the model see the whole page" approach — bypasses all
 per-ATS heuristics, works on any form including ones we've never seen.
@@ -15,34 +15,24 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 
 from loguru import logger
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 
 
-def snapshot_form_html(driver, max_chars: int = 120000) -> str:
+async def snapshot_form_html(page, max_chars: int = 120000) -> str:
     """Capture cleaned form HTML for the LLM. Strips scripts/styles, big
     base64 data, and elements with no fillable controls. Trims to fit the
     LLM context budget."""
-    raw = driver.execute_script(
-        """
-        const root = document.querySelector('form') || document.body;
-        return root ? root.outerHTML : '';
-        """
+    raw = await page.evaluate(
+        "() => { const r = document.querySelector('form') || document.body;"
+        "  return r ? r.outerHTML : ''; }"
     ) or ""
-    # Drop script/style/svg blocks
     raw = re.sub(r"<script\b[\s\S]*?</script>", "", raw, flags=re.I)
     raw = re.sub(r"<style\b[\s\S]*?</style>", "", raw, flags=re.I)
     raw = re.sub(r"<svg\b[\s\S]*?</svg>", "<svg/>", raw, flags=re.I)
-    # Strip class attributes (CSS-in-JS dumps massive css-xxxx names)
     raw = re.sub(r'\sclass="[^"]{60,}"', "", raw)
-    # Truncate base64 data: URLs
     raw = re.sub(r'(data:[a-z+/-]+;base64,)[A-Za-z0-9+/=]{100,}',
                  r'\1<truncated>', raw)
-    # Collapse whitespace runs
     raw = re.sub(r"\s+", " ", raw)
     if len(raw) > max_chars:
         raw = raw[: max_chars // 2] + "\n...[truncated]...\n" + raw[-max_chars // 2 :]
@@ -121,9 +111,7 @@ FORM HTML:
                        results[0].error if results else "no result")
         return []
     text = results[0].text.strip()
-    # Strip code fences if present
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
-    # Find the first JSON array
     m = re.search(r"\[[\s\S]*\]", text)
     if not m:
         logger.warning("page-filler: no JSON array in response: {}", text[:300])
@@ -139,105 +127,227 @@ FORM HTML:
     return actions
 
 
-def execute_actions(driver, actions: list[dict]) -> int:
+# JS used by execute_actions to walk shadow DOM when querying options.
+_DEEP_WALK = """
+function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+    if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+    const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+"""
+
+
+async def execute_actions(page, actions: list[dict]) -> int:
     """Execute the action list against the live form. Returns count succeeded."""
     done = 0
-    for i, act in enumerate(actions):
+    for act in actions:
         action = (act.get("action") or "").lower()
         sel = act.get("selector") or ""
         value = act.get("value") or ""
         if not action or not sel:
             continue
         try:
-            el = driver.find_element(By.CSS_SELECTOR, sel)
-        except Exception as e:
-            logger.debug("page-filler: selector {} not found: {}", sel[:60], e)
-            continue
-        try:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-            time.sleep(0.15)
+            loc = page.locator(sel).first
+            try:
+                await loc.scroll_into_view_if_needed(timeout=1500)
+            except Exception:
+                pass
+            await asyncio.sleep(0.15)
             if action == "fill":
-                el.click()
                 try:
-                    el.clear()
+                    await loc.click(timeout=2000)
                 except Exception:
                     pass
-                el.send_keys(value)
-                done += 1
+                try:
+                    await loc.fill("", timeout=1000)
+                except Exception:
+                    pass
+                try:
+                    await loc.fill(value, timeout=2000)
+                    done += 1
+                except Exception as e:
+                    logger.debug("page-filler: fill failed for {}: {}", sel[:60], e)
             elif action == "click":
                 clicked = False
                 try:
-                    ActionChains(driver).move_to_element(el).pause(0.05).click().perform()
+                    await loc.click(timeout=2000)
                     clicked = True
                 except Exception:
-                    try:
-                        el.click()
-                        clicked = True
-                    except Exception:
-                        pass
-                if not clicked and el.tag_name.lower() == "input":
-                    # Hidden radio/checkbox (Rippling, Headless UI) — the
-                    # visible target is the associated label, an ancestor
-                    # [role=radio] / [role=button], or a sibling div with the
-                    # state class. Try those in order.
-                    fallback = driver.execute_script(
-                        """
-                        const el = arguments[0];
-                        const root = el.getRootNode ? el.getRootNode() : document;
+                    # Hidden radio/checkbox — visible target is sibling label
+                    # or ancestor [role=radio] / [role=button]. Find via JS.
+                    target = await page.evaluate(
+                        "(_sel) => {"
+                        + _DEEP_WALK
+                        + """
+                        let el = null;
+                        for (const e of dn(document)) {
+                            if (e.matches && e.matches(_sel)) { el = e; break; }
+                        }
+                        if (!el) return null;
                         if (el.id) {
-                            const lbl = root.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-                            if (lbl) return lbl;
+                            const lbl = document.querySelector(
+                                'label[for="' + CSS.escape(el.id) + '"]');
+                            if (lbl) {
+                                lbl.scrollIntoView({block:'center'});
+                                const r = lbl.getBoundingClientRect();
+                                return {x: r.x + r.width/2, y: r.y + r.height/2};
+                            }
                         }
                         let p = el.parentElement;
                         for (let i = 0; i < 5 && p; i++) {
-                            if (p.tagName === 'LABEL') return p;
+                            if (p.tagName === 'LABEL') {
+                                p.scrollIntoView({block:'center'});
+                                const r = p.getBoundingClientRect();
+                                return {x: r.x + r.width/2, y: r.y + r.height/2};
+                            }
                             const role = p.getAttribute && p.getAttribute('role');
-                            if (role === 'radio' || role === 'checkbox' || role === 'button') return p;
+                            if (role === 'radio' || role === 'checkbox' || role === 'button') {
+                                p.scrollIntoView({block:'center'});
+                                const r = p.getBoundingClientRect();
+                                return {x: r.x + r.width/2, y: r.y + r.height/2};
+                            }
                             p = p.parentElement;
                         }
                         return null;
-                        """,
-                        el,
+                        }""",
+                        sel,
                     )
-                    if fallback:
+                    if target:
                         try:
-                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", fallback)
-                            ActionChains(driver).move_to_element(fallback).pause(0.05).click().perform()
+                            await page.mouse.click(target["x"], target["y"])
                             clicked = True
                         except Exception as e:
                             logger.debug("page-filler: fallback click failed: {}", e)
                 if clicked:
                     done += 1
             elif action == "select_combobox":
+                # Rippling/Headless-UI/Ashby comboboxes have a wrapper DIV
+                # whose click does NOTHING — the actual click target is an
+                # INNER input[role='combobox'] (or [data-input*='search']).
+                # Try inner first; fall back to wrapper.
+                inner_sel_candidates = [
+                    f"{sel} input[role='combobox']",
+                    f"{sel} input[data-input*='search']",
+                    f"{sel} input",
+                ]
+                trigger = None
+                for inner_sel in inner_sel_candidates:
+                    cand = page.locator(inner_sel).first
+                    if await cand.count() > 0:
+                        trigger = cand
+                        break
+                if trigger is None:
+                    trigger = loc
+
+                # 1) Open dropdown.
                 try:
-                    ActionChains(driver).move_to_element(el).pause(0.05).click().perform()
-                except Exception:
-                    el.click()
-                time.sleep(0.5)
-                # Try typing to filter (for searchable combos).
+                    await trigger.click(timeout=2000)
+                except Exception as e:
+                    logger.debug("page-filler: combobox trigger click failed: {}", e)
+                await asyncio.sleep(0.8)  # let listbox render (Rippling lazy)
+
+                # 1b) Rippling/Headless-UI: combobox div has aria-controls
+                # pointing to the listbox id (often portal'd to <body>).
+                # Scope option search to that listbox — get_by_role is too
+                # global and matches stale options from other comboboxes.
+                listbox_id = None
                 try:
-                    inner = None
-                    try:
-                        inner = el.find_element(By.CSS_SELECTOR,
-                            "input[role='combobox'], input[data-input*='search']")
-                    except Exception:
-                        pass
-                    typer = inner if inner else el
-                    if typer.tag_name.lower() == "input":
-                        typer.click()
-                        typer.send_keys(Keys.CONTROL, "a")
-                        typer.send_keys(Keys.DELETE)
-                        typer.send_keys(value)
-                        time.sleep(0.6)
+                    # Get aria-controls from the combobox we clicked on.
+                    listbox_id = await page.locator(sel).first.get_attribute(
+                        "aria-controls", timeout=500,
+                    )
                 except Exception:
                     pass
+
+                clicked = False
+
+                async def _click_option(want: str) -> bool:
+                    """Find an option matching `want` (exact-then-substring)
+                    inside the active listbox, click it. Returns success."""
+                    # Try the scoped listbox first; fall back to all options.
+                    if listbox_id:
+                        scope_selectors = [
+                            f"#{listbox_id} [role='option']",
+                            "[role='listbox'] [role='option']",
+                            "[role='option']",
+                        ]
+                    else:
+                        scope_selectors = [
+                            "[role='listbox'] [role='option']",
+                            "[role='option']",
+                        ]
+                    want_low = want.strip().lower()
+                    for scope in scope_selectors:
+                        opts = page.locator(scope)
+                        n = await opts.count()
+                        if n == 0:
+                            continue
+                        # Build a list of (idx, text) so we can pick the
+                        # best match (exact > prefix > substring).
+                        exact_idx = prefix_idx = sub_idx = -1
+                        for i in range(min(n, 60)):
+                            try:
+                                t = (await opts.nth(i).text_content()) or ""
+                            except Exception:
+                                continue
+                            t_low = t.strip().lower()
+                            if not t_low:
+                                continue
+                            if t_low == want_low and exact_idx < 0:
+                                exact_idx = i
+                            elif t_low.startswith(want_low) and prefix_idx < 0:
+                                prefix_idx = i
+                            elif want_low in t_low and sub_idx < 0:
+                                sub_idx = i
+                        pick = exact_idx if exact_idx >= 0 else (
+                            prefix_idx if prefix_idx >= 0 else sub_idx
+                        )
+                        if pick >= 0:
+                            try:
+                                await opts.nth(pick).scroll_into_view_if_needed(
+                                    timeout=1500,
+                                )
+                                await opts.nth(pick).click(timeout=2000)
+                                return True
+                            except Exception as e:
+                                logger.debug("option click failed: {}", e)
+                    return False
+
+                clicked = await _click_option(value)
+
+                # 2) Not found → type to filter (only if there's an inner
+                # input — Rippling's pure-DIV combobox accepts keystrokes
+                # via .type(), which Playwright sends to the focused element.
+                # `trigger` was set to inner-input above when one exists.
+                if not clicked:
+                    try:
+                        # If trigger is an INPUT, fill works; otherwise fall
+                        # back to page.keyboard.type AFTER ensuring focus
+                        # via trigger.focus().
+                        is_input = await trigger.evaluate(
+                            "el => el.tagName === 'INPUT' || el.isContentEditable"
+                        )
+                        if is_input:
+                            await trigger.fill(value, timeout=1500)
+                        else:
+                            # DIV combobox: focus first, then type. Playwright
+                            # routes to focused element — and we just clicked
+                            # this trigger so it has focus.
+                            await trigger.focus()
+                            await page.keyboard.type(value, delay=30)
+                        await asyncio.sleep(0.7)
+                        clicked = await _click_option(value)
+                    except Exception as e:
+                        logger.debug("page-filler: combobox filter+click failed: {}", e)
+
+                if clicked:
+                    done += 1
+                    await asyncio.sleep(0.4)
+                    continue
+                option_xy = None
                 # Find and click the option whose visible text matches `value`.
-                option = driver.execute_script(
-                    """
-                    function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
-                        if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
-                        const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
-                    const want = arguments[0].toLowerCase();
+                option_xy = await page.evaluate(
+                    "(_val) => { const want = _val.toLowerCase();"
+                    + _DEEP_WALK
+                    + """
                     let contains = null;
                     for (const el of dn(document)) {
                         if (el.getAttribute && el.getAttribute('role') === 'option') {
@@ -245,51 +355,57 @@ def execute_actions(driver, actions: list[dict]) -> int:
                             if (r.width < 1 || r.height < 1) continue;
                             const t = (el.textContent || '').trim().toLowerCase();
                             if (!t) continue;
-                            if (t === want) return el;
+                            if (t === want) {
+                                el.scrollIntoView({block:'center'});
+                                const r2 = el.getBoundingClientRect();
+                                return {x: r2.x + r2.width/2, y: r2.y + r2.height/2};
+                            }
                             if (!contains && t.includes(want)) contains = el;
                         }
                     }
-                    return contains;
-                    """,
+                    if (contains) {
+                        contains.scrollIntoView({block:'center'});
+                        const r2 = contains.getBoundingClientRect();
+                        return {x: r2.x + r2.width/2, y: r2.y + r2.height/2};
+                    }
+                    return null;
+                    }""",
                     value,
                 )
-                if not option and re.search(r"decline|prefer not|don'?t (wish|want)|not (specified|specify|identify|disclose|to)|do not wish|choose not", value, re.I):
-                    # User asked for a 'decline' option but the exact wording
-                    # didn't match. Look for ANY option that semantically
-                    # matches "decline / choose not to / prefer not". Two
-                    # patterns: explicit "decline/undisclosed" terms, OR the
-                    # word "not" within a few words of disclose/specify/
-                    # identify/answer/say (covers "Choose not to disclose",
-                    # "I don't wish to specify", "Prefer not to say", etc.).
-                    option = driver.execute_script(
-                        """
-                        function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
-                            if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
-                            const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                if not option_xy and re.search(
+                    r"decline|prefer not|don'?t (wish|want)|"
+                    r"not (specified|specify|identify|disclose|to)|"
+                    r"do not wish|choose not", value, re.I,
+                ):
+                    option_xy = await page.evaluate(
+                        "() => {"
+                        + _DEEP_WALK
+                        + r"""
                         const re1 = /decline|undisclosed|not provided|prefer not/i;
-                        const re2 = /\\bnot\\b[^.]{0,20}\\b(disclose|specify|specified|identify|answer|say|tell|share)\\b/i;
+                        const re2 = /\bnot\b[^.]{0,20}\b(disclose|specify|specified|identify|answer|say|tell|share)\b/i;
                         for (const el of dn(document)) {
                             if (el.getAttribute && el.getAttribute('role') === 'option') {
                                 const r = el.getBoundingClientRect();
                                 if (r.width < 1 || r.height < 1) continue;
                                 const t = (el.textContent || '').trim();
-                                if (t && (re1.test(t) || re2.test(t))) return el;
+                                if (t && (re1.test(t) || re2.test(t))) {
+                                    el.scrollIntoView({block:'center'});
+                                    const r2 = el.getBoundingClientRect();
+                                    return {x: r2.x + r2.width/2, y: r2.y + r2.height/2};
+                                }
                             }
                         }
                         return null;
-                        """,
+                        }""",
                     )
-                if option:
-                    option.click()
+                if option_xy:
+                    await page.mouse.click(option_xy["x"], option_xy["y"])
                     done += 1
                 else:
-                    # Log the actual options visible so the next page-filler
-                    # iteration's Claude prompt has truth.
-                    visible_opts = driver.execute_script(
-                        """
-                        function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
-                            if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
-                            const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                    visible_opts = await page.evaluate(
+                        "() => {"
+                        + _DEEP_WALK
+                        + """
                         const out = [];
                         for (const el of dn(document)) {
                             if (el.getAttribute && el.getAttribute('role') === 'option') {
@@ -300,31 +416,31 @@ def execute_actions(driver, actions: list[dict]) -> int:
                             }
                         }
                         return out.slice(0, 12);
-                        """,
+                        }""",
                     ) or []
                     logger.warning("page-filler: option '{}' not in {} — visible: {}",
                                    value, sel[:50], visible_opts)
                     try:
-                        el.send_keys(Keys.ESCAPE)
+                        await page.keyboard.press("Escape")
                     except Exception:
                         pass
             else:
                 logger.debug("page-filler: unknown action {}", action)
         except Exception as e:
             logger.debug("page-filler: action {} on {} failed: {}", action, sel[:60], e)
-        time.sleep(0.25)
+        await asyncio.sleep(0.25)
     return done
 
 
-def fill_form_via_page_snapshot(
-    driver, profile_text: str, prior_errors: list[str] | None = None,
+async def fill_form_via_page_snapshot(
+    page, profile_text: str, prior_errors: list[str] | None = None,
 ) -> int:
     """End-to-end: snapshot form, ask Claude, execute. Returns count of
     actions successfully executed (0 = no progress)."""
-    html = snapshot_form_html(driver)
+    html = await snapshot_form_html(page)
     if not html:
         return 0
-    actions = asyncio.run(ask_claude_for_fill_plan(html, profile_text, prior_errors))
+    actions = await ask_claude_for_fill_plan(html, profile_text, prior_errors)
     if not actions:
         return 0
-    return execute_actions(driver, actions)
+    return await execute_actions(page, actions)

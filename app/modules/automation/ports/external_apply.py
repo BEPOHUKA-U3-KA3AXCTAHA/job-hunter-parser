@@ -47,6 +47,11 @@ class AtsResult:
 class AtsHandler(Protocol):
     """One concrete handler per ATS family.
 
+    `apply` is async — handlers run on Camoufox/Playwright (patched Firefox
+    that bypasses Cloudflare's fingerprint detection). Selenium can't
+    survive a Cloudflare-Turnstile-protected ATS like Rippling/Aalyria;
+    Camoufox passes the fingerprint check and submits cleanly.
+
     Implementations: app.modules.automation.adapters.external_apply.{
     greenhouse, lever, ashby, workday, generic}.
     """
@@ -55,4 +60,4 @@ class AtsHandler(Protocol):
 
     def can_handle(self, url: str) -> bool: ...
 
-    def apply(self, driver, ctx: AtsContext) -> AtsResult: ...
+    async def apply(self, page, ctx: AtsContext) -> AtsResult: ...

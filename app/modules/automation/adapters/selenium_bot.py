@@ -1578,11 +1578,17 @@ def _find_external_apply_button(driver):
 
 
 def _try_external_apply(driver, ext_btn, company_name: str, job_title: str, job_url: str, job_tag: str):
-    """Click the external Apply button, switch to the new tab, dispatch to the
-    matching ATS handler. Returns ApplyResult on success/failure, or None if
-    the click didn't open a new tab (caller falls back to other paths)."""
+    """Click the external Apply button → capture the ATS URL → close the
+    new Selenium tab → hand off to a Camoufox session for the actual form
+    work. Selenium gets fingerprint-flagged by Cloudflare on hardened ATSes
+    (Rippling/Aalyria) before the form even renders; Camoufox passes
+    silently. The Selenium driver here is JUST the LinkedIn session — it
+    captures the URL and bows out."""
     from app.modules.automation.adapters.external_apply import (
-        channel_for_handler, load_ats_context, pick_handler,
+        channel_for_handler, load_ats_context,
+    )
+    from app.modules.automation.adapters.external_apply.runner import (
+        run_external_apply_sync,
     )
 
     main_handles = driver.window_handles[:]
@@ -1609,29 +1615,22 @@ def _try_external_apply(driver, ext_btn, company_name: str, job_title: str, job_
     driver.switch_to.window(new_handle)
     time.sleep(2)
     ats_url = driver.current_url
-    handler = pick_handler(ats_url)
-    logger.info("external apply: ATS={} URL={}", handler.name, ats_url[:120])
-
-    try:
-        ctx = load_ats_context(
-            company=company_name or "(unknown)",
-            job_title=job_title,
-            job_url=job_url,
-            ats_url=ats_url,
-        )
-        result = handler.apply(driver, ctx)
-    except Exception as e:
-        logger.exception("ATS handler {} crashed: {}", handler.name, e)
-        result = type("R", (), {"success": False, "detail": f"handler crashed: {e}",
-                                "ats_name": handler.name, "fields_filled": 0, "pages": 0})()
-
-    _diag_save(driver, f"{job_tag}_ext_{handler.name}_done")
-    # Close the ATS tab + switch back to LinkedIn
+    # Hand the URL to Camoufox — close this Selenium tab so we don't waste
+    # a flagged session.
     try:
         driver.close()
     except Exception:
         pass
     driver.switch_to.window(main_handles[0])
+
+    ctx = load_ats_context(
+        company=company_name or "(unknown)",
+        job_title=job_title,
+        job_url=job_url,
+        ats_url=ats_url,
+    )
+    result = run_external_apply_sync(ats_url, ctx, headless=False)
+    _diag_save(driver, f"{job_tag}_ext_{result.ats_name}_done")
 
     if result.success:
         return ApplyResult(
