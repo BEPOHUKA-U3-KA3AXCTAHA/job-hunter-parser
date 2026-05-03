@@ -1,4 +1,4 @@
-"""Implementations of the ApplyJournal port."""
-from app.modules.applies.adapters.apply_journal.sqla import SqlaApplyJournal
+"""Implementations of the ApplyJournalRepository port."""
+from app.modules.applies.adapters.apply_journal.sqla import SqlaApplyJournalRepository
 
-__all__ = ["SqlaApplyJournal"]
+__all__ = ["SqlaApplyJournalRepository"]

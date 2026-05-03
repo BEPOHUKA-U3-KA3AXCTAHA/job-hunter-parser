@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db import get_session_maker
-from app.modules.companies.adapters.company_directory.sqla import SqlaCompanyDirectory
+from app.modules.companies.adapters.company_directory.sqla import SqlaCompanyDirectoryRepository
 from app.modules.companies.ports.companies_uow import CompaniesUoW
 
 
@@ -18,7 +18,7 @@ class SqlaCompaniesUoW(CompaniesUoW):
 
     async def __aenter__(self) -> SqlaCompaniesUoW:
         self._session = get_session_maker()()
-        self.companies = SqlaCompanyDirectory(self._session)
+        self.companies = SqlaCompanyDirectoryRepository(self._session)
         return self
 
     async def __aexit__(

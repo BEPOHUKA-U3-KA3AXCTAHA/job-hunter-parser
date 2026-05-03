@@ -1,4 +1,4 @@
-"""SQLA implementation of Accounts.
+"""SQLA implementation of AccountsRepository.
 
 Cosmic-Python style: takes the AsyncSession in __init__ from the UoW.
 NEVER opens its own session, NEVER commits — UoW owns the transaction
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db.tables.users import UserRow
 from app.modules.users.models.user import User
-from app.modules.users.ports.accounts import Accounts
+from app.modules.users.ports.accounts import AccountsRepository
 
 
 def _row_to_user(row: UserRow) -> User:
@@ -28,7 +28,7 @@ def _row_to_user(row: UserRow) -> User:
     )
 
 
-class SqlaAccounts(Accounts):
+class SqlaAccountsRepository(AccountsRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
 

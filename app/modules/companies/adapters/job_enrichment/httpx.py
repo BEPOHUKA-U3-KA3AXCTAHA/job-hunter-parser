@@ -1,7 +1,7 @@
 """Enrich existing job postings: fetch source URL, scrape apply-to email,
 persist back via repository.
 
-Pure orchestration over a CompanyDirectory port — no SQLAlchemy here.
+Pure orchestration over a CompanyDirectoryRepository port — no SQLAlchemy here.
 Cheap and on-demand: only run for jobs you actually plan to act on
 (curated set), not the whole scraped corpus. Bounded parallelism via
 asyncio.Semaphore so we don't hammer any single host.
@@ -14,7 +14,7 @@ from uuid import UUID
 import httpx
 from loguru import logger
 
-from app.modules.companies.ports.company_directory import CompanyDirectory, JobApplyTarget
+from app.modules.companies.ports.company_directory import CompanyDirectoryRepository, JobApplyTarget
 from app.modules.companies.services.email_extract import extract_apply_email
 
 _HEADERS = {

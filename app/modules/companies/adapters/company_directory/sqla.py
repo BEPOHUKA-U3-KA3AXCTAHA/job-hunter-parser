@@ -1,4 +1,4 @@
-"""SQLA implementation of CompanyDirectory.
+"""SQLA implementation of CompanyDirectoryRepository.
 
 Cosmic-Python style: takes the AsyncSession in __init__ from the UoW.
 NEVER opens its own session, NEVER commits.
@@ -11,11 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
-from app.modules.companies.ports.company_directory import CompanyDirectory, JobApplyTarget
+from app.modules.companies.ports.company_directory import CompanyDirectoryRepository, JobApplyTarget
 
 
-class SqlaCompanyDirectory(CompanyDirectory):
-    """Implements `app.modules.companies.ports.company_directory.CompanyDirectory`."""
+class SqlaCompanyDirectoryRepository(CompanyDirectoryRepository):
+    """Implements `app.modules.companies.ports.company_directory.CompanyDirectoryRepository`."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._s = session

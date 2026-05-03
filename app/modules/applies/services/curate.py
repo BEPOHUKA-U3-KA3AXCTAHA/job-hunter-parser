@@ -1,7 +1,7 @@
 """Curate (job_posting × decision_maker) pairs.
 
 Pure scoring + filtering logic over domain objects. No SQLAlchemy here —
-the data comes in as `list[CandidateBundle]` from a CandidateBundles
+the data comes in as `list[CandidateBundle]` from a CandidateBundlesRepository
 adapter (composition root wires the SQLA-backed instance).
 
 Hard filters here are defensive — `matches_title` already rejects most

@@ -13,7 +13,7 @@ from rich.table import Table
 from app.modules.companies import Company, JobPosting
 from app.modules.companies import CompanySource
 from app.modules.applies import Message, MessageChannel, MessageStatus
-from app.modules.applies import LLMGenerator, ApplyJournal
+from app.modules.applies import LLMGenerator, ApplyJournalRepository
 from app.modules.applies import RelevanceScorer
 from app.modules.people import DecisionMakerRole
 from app.modules.people import ContactEnrichment, DecisionMakerSearch
