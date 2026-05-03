@@ -15,15 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db import get_session_maker
 from app.modules.applies.adapters.candidates.sqla import (
-    SqlaCandidateBundleRepository,
+    SqlaCandidateBundles,
 )
 from app.modules.applies.adapters.mass_apply.sqla import (
-    SqlaMassApplyRepository,
+    SqlaMassApplyJournal,
 )
 from app.modules.applies.adapters.qa_cache.sqla import (
-    SqlaQACacheRepository,
+    SqlaQACache,
 )
-from app.modules.applies.adapters.repository.sqla import SqliteApplyRepository
+from app.modules.applies.adapters.apply_journal.sqla import SqlaApplyJournal
 from app.modules.applies.ports.applies_uow import AppliesUoW
 
 
@@ -39,10 +39,10 @@ class SqlaAppliesUoW(AppliesUoW):
         self._session = get_session_maker()()
         # Wire each repo to share THIS session — multi-repo operations end
         # up in one transaction.
-        self.apply = SqliteApplyRepository(self._session)
-        self.mass_apply = SqlaMassApplyRepository(self._session)
-        self.candidates = SqlaCandidateBundleRepository(self._session)
-        self.qa_cache = SqlaQACacheRepository(self._session)
+        self.apply = SqlaApplyJournal(self._session)
+        self.mass_apply = SqlaMassApplyJournal(self._session)
+        self.candidates = SqlaCandidateBundles(self._session)
+        self.qa_cache = SqlaQACache(self._session)
         return self
 
     async def __aexit__(

@@ -1,4 +1,4 @@
-"""SQLite-backed ApplyRepository using SQLAlchemy async.
+"""SQLite-backed ApplyJournal using SQLAlchemy async.
 
 Deduplicates by (decision_maker, attempt_no).
 Updates last_seen_at / last_seen_at on re-scrape.
@@ -19,7 +19,7 @@ from app.modules.applies.models import (
     ApplyChannel as MessageChannel,
     ApplyStatus as MessageStatus,
 )
-from app.modules.applies.ports import ApplyRepository
+from app.modules.applies.ports import ApplyJournal
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.modules.companies import Company
 from app.infra.db.tables.people import DecisionMakerRow
@@ -27,7 +27,7 @@ from app.modules.people import DecisionMaker, DecisionMakerRole
 from app.modules.companies import TechStack
 
 
-class SqliteApplyRepository(ApplyRepository):
+class SqlaApplyJournal(ApplyJournal):
     """Persists messages in SQLite. Deduplicates on re-scrape.
 
     Hunt always creates/updates attempt_no=1.

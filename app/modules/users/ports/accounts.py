@@ -8,7 +8,7 @@ from app.modules.users.models.user import User
 
 
 @runtime_checkable
-class UserRepository(Protocol):
+class Accounts(Protocol):
     async def get_by_email(self, email: str) -> User | None: ...
     async def get_by_id(self, user_id: UUID) -> User | None: ...
     async def get_default(self) -> User | None:

@@ -18,7 +18,7 @@ from typing import Literal
 from loguru import logger
 
 from app.modules.applies.adapters.llm.cli import ClaudeCLIPool
-from app.modules.applies.ports.qa_cache import QACacheRepository
+from app.modules.applies.ports.qa_cache import QACache
 from app.modules.users import CandidateProfile
 
 QuestionType = Literal["text", "number", "tel", "email", "textarea", "select", "radio", "checkbox"]
@@ -140,7 +140,7 @@ async def answer_questions(
     Returns empty list if the CLI call failed — caller should treat as
     'cannot auto-fill, bail to the human'.
 
-    `cache` is the QACacheRepository port; defaults to SQLA-backed impl.
+    `cache` is the QACache port; defaults to SQLA-backed impl.
     Injectable so callers can swap in an in-memory cache for tests.
     """
     if not questions:

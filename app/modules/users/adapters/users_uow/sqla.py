@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db import get_session_maker
-from app.modules.users.adapters.repository.sqla import SqlaUserRepository
+from app.modules.users.adapters.accounts.sqla import SqlaAccounts
 from app.modules.users.ports.users_uow import UsersUoW
 
 
@@ -18,7 +18,7 @@ class SqlaUsersUoW(UsersUoW):
 
     async def __aenter__(self) -> SqlaUsersUoW:
         self._session = get_session_maker()()
-        self.users = SqlaUserRepository(self._session)
+        self.users = SqlaAccounts(self._session)
         return self
 
     async def __aexit__(

@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from app.modules.companies.ports.repository import CompanyRepository
+from app.modules.companies.ports.company_directory import CompanyDirectory
 
 
 @runtime_checkable
 class CompaniesUoW(Protocol):
-    companies: CompanyRepository
+    companies: CompanyDirectory
 
     async def __aenter__(self) -> CompaniesUoW: ...
     async def __aexit__(

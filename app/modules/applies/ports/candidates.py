@@ -16,7 +16,7 @@ from app.modules.people import DecisionMaker
 class CandidateBundle:
     """One job posting + the company that owns it + every DM at that company.
 
-    Returned by `CandidateBundleRepository.load_active_bundles()` — the
+    Returned by `CandidateBundles.load_active_bundles()` — the
     curate service then filters/scores these into outreach pairs.
     """
     job: JobPosting
@@ -25,7 +25,7 @@ class CandidateBundle:
 
 
 @runtime_checkable
-class CandidateBundleRepository(Protocol):
+class CandidateBundles(Protocol):
     """Driven port: persist + load (job, company, dms) bundles for curation."""
 
     async def load_active_bundles(self) -> list[CandidateBundle]: ...

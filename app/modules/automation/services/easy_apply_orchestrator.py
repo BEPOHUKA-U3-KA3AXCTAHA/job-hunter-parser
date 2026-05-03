@@ -61,7 +61,7 @@ async def _record_apply(
     company_name: str, job_title: str, job_url: str,
     result: ApplyResult,
 ) -> None:
-    """Save the apply attempt via the MassApplyRepository port."""
+    """Save the apply attempt via the MassApplyJournal port."""
     success = result.outcome == ApplyOutcome.APPLIED
     notes = (
         f"easy_apply: outcome={result.outcome.value} "
@@ -122,7 +122,7 @@ async def run_easy_apply_batch(
 ) -> dict:
     """Main entry. Search → filter Easy Apply → apply with conservative pacing.
 
-    `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
+    `repo` is the MassApplyJournal port; defaults to SQLA-backed impl.
     """
     limit = min(limit, MAX_APPLIES_PER_BATCH)
     uow_factory = uow_factory or _default_uow_factory()

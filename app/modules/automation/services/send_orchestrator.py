@@ -96,8 +96,8 @@ async def _record_outcome(
     else:
         notes = f"failed at {now}: {detail}"
     async with uow_factory() as _uow:
-
         await _uow.mass_apply.mark_apply_sent(apply_id, success=success, notes=notes)
+        await _uow.commit()
 
 
 async def run_send_batch(
@@ -109,21 +109,20 @@ async def run_send_batch(
     """Main entry point. Loads pending applies, sends up to `limit` of them.
 
     Returns stats dict: {sent_invite, sent_message, skipped, blocked, failed}.
-    `repo` is the MassApplyRepository port; defaults to SQLA-backed impl.
+    `uow_factory` returns an AppliesUoW; defaults to SQLA-backed impl.
     """
     limit = min(limit, MAX_SEND_PER_BATCH)
     uow_factory = uow_factory or _default_uow_factory()
     async with uow_factory() as uow:
         sent_today = await uow.mass_apply.count_applies_today("dm_outreach")
-    if sent_today >= MAX_SENT_PER_DAY:
-        logger.warning("Daily cap reached: {}/{} already sent in last 24h",
-                       sent_today, MAX_SENT_PER_DAY)
-        return {"daily_cap_reached": True, "sent_today": sent_today}
+        if sent_today >= MAX_SENT_PER_DAY:
+            logger.warning("Daily cap reached: {}/{} already sent in last 24h",
+                           sent_today, MAX_SENT_PER_DAY)
+            return {"daily_cap_reached": True, "sent_today": sent_today}
 
-    headroom = MAX_SENT_PER_DAY - sent_today
-    effective_limit = min(limit, headroom)
-
-    pending: list[PendingOutreach] = await repo.list_pending_dm_outreach(effective_limit)
+        headroom = MAX_SENT_PER_DAY - sent_today
+        effective_limit = min(limit, headroom)
+        pending: list[PendingOutreach] = await uow.mass_apply.list_pending_dm_outreach(effective_limit)
     # Filter rows that don't have a usable LinkedIn URL — the repository
     # returns the contact dict's "linkedin" verbatim; not every DM has one.
     pending = [p for p in pending if p.dm_linkedin_url and "linkedin.com/in/" in p.dm_linkedin_url]
@@ -161,7 +160,7 @@ async def run_send_batch(
                 logger.exception("send_outreach raised: {}", e)
                 result = OutreachResult(OutreachOutcome.FAILED, str(e))
 
-            await _record_outcome(repo, p.apply_id, result.outcome, result.detail)
+            await _record_outcome(uow_factory, p.apply_id, result.outcome, result.detail)
 
             if result.outcome == OutreachOutcome.SENT_VIA_INVITE:
                 stats["sent_invite"] += 1

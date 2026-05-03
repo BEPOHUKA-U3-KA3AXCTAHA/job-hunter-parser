@@ -1,4 +1,4 @@
-"""SQLA implementation of QACacheRepository.
+"""SQLA implementation of QACache.
 
 Cosmic-Python style: takes the AsyncSession in __init__ (handed in by the
 SqlaUnitOfWork). NEVER opens its own session, NEVER commits — the UoW
@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infra.db.tables.form_answers import FormAnswerRow
-from app.modules.applies.ports.qa_cache import QACacheRepository
+from app.modules.applies.ports.qa_cache import QACache
 
 
 def normalize_question(label: str) -> str:
@@ -27,8 +27,8 @@ def normalize_question(label: str) -> str:
     return s.strip()
 
 
-class SqlaQACacheRepository(QACacheRepository):
-    """Implements `app.modules.applies.ports.qa_cache.QACacheRepository`."""
+class SqlaQACache(QACache):
+    """Implements `app.modules.applies.ports.qa_cache.QACache`."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._s = session

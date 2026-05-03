@@ -24,7 +24,7 @@ class JobApplyTarget:
 
 
 @runtime_checkable
-class CompanyRepository(Protocol):
+class CompanyDirectory(Protocol):
     """Read + write port for the companies/jobs schema."""
 
     async def load_apply_targets(self, job_ids: list[UUID]) -> list[JobApplyTarget]: ...

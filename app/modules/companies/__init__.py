@@ -16,7 +16,7 @@ from app.modules.companies.models import (
 )
 from app.modules.companies.ports import CompanySource
 from app.modules.companies.ports.companies_uow import CompaniesUoW
-from app.modules.companies.ports.repository import CompanyRepository, JobApplyTarget
+from app.modules.companies.ports.company_directory import CompanyDirectory, JobApplyTarget
 
 
 def default_uow() -> CompaniesUoW:
@@ -28,7 +28,7 @@ __all__ = [
     "CompaniesUoW",
     "Company",
     "CompanyNotFound",
-    "CompanyRepository",
+    "CompanyDirectory",
     "CompanySource",
     "default_uow",
     "JobApplyTarget",

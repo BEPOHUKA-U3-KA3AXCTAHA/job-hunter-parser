@@ -1,4 +1,4 @@
 """Users module — driven ports."""
-from app.modules.users.ports.repository import UserRepository
+from app.modules.users.ports.accounts import Accounts
 
-__all__ = ["UserRepository"]
+__all__ = ["Accounts"]

@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from app.modules.users.ports.repository import UserRepository
+from app.modules.users.ports.accounts import Accounts
 
 
 @runtime_checkable
 class UsersUoW(Protocol):
     """Transactional boundary for one users-module business operation."""
 
-    users: UserRepository
+    users: Accounts
 
     async def __aenter__(self) -> UsersUoW: ...
     async def __aexit__(

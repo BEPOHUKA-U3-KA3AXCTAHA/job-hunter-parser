@@ -9,10 +9,10 @@ from typing import Literal, Protocol, runtime_checkable
 
 
 @runtime_checkable
-class QACacheRepository(Protocol):
+class QACache(Protocol):
     """Persisted (normalized question text → answer) pairs.
 
-    Implementations: SqlaQACacheRepository (form_answers table).
+    Implementations: SqlaQACache (form_answers table).
     Could grow alternates later: in-memory for tests, file-backed for portability.
     """
 

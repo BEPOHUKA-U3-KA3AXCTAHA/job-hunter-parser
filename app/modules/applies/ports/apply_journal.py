@@ -1,4 +1,4 @@
-"""ApplyRepository port — persist + query applies, plus convenience joins
+"""ApplyJournal port — persist + query applies, plus convenience joins
 with companies/people that the scoring & curation services need."""
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from app.modules.people import DecisionMaker
 
 
 @runtime_checkable
-class ApplyRepository(Protocol):
+class ApplyJournal(Protocol):
     async def save(self, apply: Apply) -> None: ...
     async def save_many(self, applies: list[Apply]) -> None: ...
     async def get_by_id(self, apply_id: UUID) -> Apply | None: ...

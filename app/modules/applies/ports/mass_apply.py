@@ -25,7 +25,7 @@ class PendingOutreach:
 
 
 @runtime_checkable
-class MassApplyRepository(Protocol):
+class MassApplyJournal(Protocol):
     """Read + write port for ATS / DM apply attempts."""
 
     # ---- Reads ----

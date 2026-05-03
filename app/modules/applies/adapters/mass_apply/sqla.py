@@ -1,4 +1,4 @@
-"""SQLA implementation of MassApplyRepository.
+"""SQLA implementation of MassApplyJournal.
 
 Cosmic-Python style: takes the AsyncSession in __init__ (handed in by the
 SqlaUnitOfWork at __aenter__ time). NEVER opens its own session, NEVER
@@ -19,11 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infra.db.tables.applies import ApplyRow
 from app.infra.db.tables.companies import CompanyRow, JobPostingRow
 from app.infra.db.tables.people import DecisionMakerRow
-from app.modules.applies.ports.mass_apply import MassApplyRepository, PendingOutreach
+from app.modules.applies.ports.mass_apply import MassApplyJournal, PendingOutreach
 
 
-class SqlaMassApplyRepository(MassApplyRepository):
-    """Implements `app.modules.applies.ports.mass_apply.MassApplyRepository`.
+class SqlaMassApplyJournal(MassApplyJournal):
+    """Implements `app.modules.applies.ports.mass_apply.MassApplyJournal`.
 
     Session is handed in by the UoW. Methods perform their reads/writes on
     that shared session; the UoW is responsible for commit/rollback.

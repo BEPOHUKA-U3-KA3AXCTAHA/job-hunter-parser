@@ -1,11 +1,11 @@
 """Users module — public API.
 
 Cross-module callers MUST import from here only:
-    from app.modules.users import User, UserRepository, default_user_repo
+    from app.modules.users import User, Accounts, default_user_repo
 """
 from app.modules.users.models.candidate_profile import CandidateProfile, load_user_info
 from app.modules.users.models.user import User, UserNotFound
-from app.modules.users.ports.repository import UserRepository
+from app.modules.users.ports.accounts import Accounts
 from app.modules.users.ports.users_uow import UsersUoW
 
 
@@ -17,5 +17,5 @@ def default_uow() -> UsersUoW:
 
 __all__ = [
     "CandidateProfile", "User", "UserNotFound",
-    "UserRepository", "UsersUoW", "default_uow", "load_user_info",
+    "Accounts", "UsersUoW", "default_uow", "load_user_info",
 ]

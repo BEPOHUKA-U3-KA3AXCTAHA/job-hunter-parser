@@ -21,20 +21,20 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from app.modules.applies.ports.candidates import CandidateBundleRepository
-from app.modules.applies.ports.mass_apply import MassApplyRepository
-from app.modules.applies.ports.qa_cache import QACacheRepository
-from app.modules.applies.ports.repository import ApplyRepository
+from app.modules.applies.ports.candidates import CandidateBundles
+from app.modules.applies.ports.mass_apply import MassApplyJournal
+from app.modules.applies.ports.qa_cache import QACache
+from app.modules.applies.ports.apply_journal import ApplyJournal
 
 
 @runtime_checkable
 class AppliesUoW(Protocol):
     """Transactional boundary for one applies-module business operation."""
 
-    apply: ApplyRepository
-    mass_apply: MassApplyRepository
-    candidates: CandidateBundleRepository
-    qa_cache: QACacheRepository
+    apply: ApplyJournal
+    mass_apply: MassApplyJournal
+    candidates: CandidateBundles
+    qa_cache: QACache
 
     async def __aenter__(self) -> AppliesUoW: ...
 

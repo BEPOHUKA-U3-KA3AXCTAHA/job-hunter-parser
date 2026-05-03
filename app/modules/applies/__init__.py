@@ -1,7 +1,7 @@
 """Applies module — public API.
 
 Cross-module callers MUST import from here only:
-    from app.modules.applies import Apply, ApplyStatus, MassApplyRepository, ...
+    from app.modules.applies import Apply, ApplyStatus, MassApplyJournal, ...
 
 Internal sub-packages (models/, ports/, adapters/, services/) are private.
 Composition roots (entrypoints/) may also import concrete adapters from
@@ -19,13 +19,13 @@ from app.modules.applies.models import (
     MessageStatus,
 )
 from app.modules.applies.ports import (
-    ApplyRepository,
+    ApplyJournal,
     CandidateBundle,
-    CandidateBundleRepository,
+    CandidateBundles,
     LLMGenerator,
-    QACacheRepository,
+    QACache,
 )
-from app.modules.applies.ports.mass_apply import MassApplyRepository, PendingOutreach
+from app.modules.applies.ports.mass_apply import MassApplyJournal, PendingOutreach
 from app.modules.applies.ports.applies_uow import AppliesUoW
 from app.modules.applies.services.answer_questions import (
     FormAnswer,
@@ -56,8 +56,8 @@ __all__ = [
     "Apply", "ApplyChannel", "ApplyFlank", "ApplyMethod", "ApplyNotFound", "ApplyStatus",
     "Message", "MessageChannel", "MessageStatus",
     # ports
-    "ApplyRepository", "CandidateBundle", "CandidateBundleRepository",
-    "LLMGenerator", "MassApplyRepository", "PendingOutreach", "QACacheRepository",
+    "ApplyJournal", "CandidateBundle", "CandidateBundles",
+    "LLMGenerator", "MassApplyJournal", "PendingOutreach", "QACache",
     "AppliesUoW",
     # services (use cases)
     "CuratedPair", "FormAnswer", "FormQuestion", "RelevanceScorer",
