@@ -19,10 +19,154 @@ import re
 from loguru import logger
 
 
+async def _collect_combobox_options(page) -> dict[str, list[str]]:
+    """Open each [role=combobox] briefly, collect its option texts from the
+    associated listbox, close again. Returns {combobox_id: [opt, ...]}.
+
+    Why: Rippling/Headless-UI render listbox options into a portal in <body>
+    only when the dropdown is open — they DON'T appear in form.outerHTML.
+    Without this, Claude has to guess the option strings (e.g. "Montenegro"
+    when the actual option is "+382 ME"), and the picker silently rejects
+    non-matching values.
+    """
+    combos = await page.evaluate(
+        """() => {
+            const out = [];
+            for (const el of document.querySelectorAll('[role=combobox]')) {
+                if (!el.id) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 4 || r.height < 4) continue;
+                // Find a meaningful label: aria-labelledby > <label for=id> >
+                // <legend> in nearest fieldset > nearest preceding label/text
+                let label = '';
+                const lbId = el.getAttribute('aria-labelledby');
+                if (lbId) {
+                    const e = document.getElementById(lbId);
+                    if (e) label = (e.textContent || '').trim();
+                }
+                if (!label && el.id) {
+                    const e = document.querySelector(
+                        'label[for="' + el.id + '"]');
+                    if (e) label = (e.textContent || '').trim();
+                }
+                if (!label) {
+                    let p = el.parentElement;
+                    for (let i = 0; i < 5 && p; i++) {
+                        const fs = p.tagName === 'FIELDSET'
+                            ? p.querySelector('legend') : null;
+                        if (fs) { label = (fs.textContent || '').trim(); break; }
+                        p = p.parentElement;
+                    }
+                }
+                if (!label || label.length < 5 || /^select$/i.test(label)) {
+                    // Walk back: prev sibling, parent's prev sibling, etc.
+                    // grab visible text — these forms commonly render the
+                    // question as a sibling <p> right before the combobox.
+                    let p = el;
+                    for (let i = 0; i < 6 && p; i++) {
+                        const sib = p.previousElementSibling;
+                        if (sib) {
+                            const t = (sib.textContent || '').trim();
+                            if (t && t.length > 5 && t.length < 300) {
+                                label = t.slice(0, 200); break;
+                            }
+                        }
+                        p = p.parentElement;
+                    }
+                }
+                if (!label) label = el.getAttribute('aria-label') || '(no label)';
+                out.push({id: el.id, label: label.slice(0, 200)});
+            }
+            return out;
+        }"""
+    )
+    found: dict[str, dict] = {}
+    for combo in combos:
+        cid = combo["id"]
+        label = combo.get("label", "")
+        # Close any leftover open dropdown from the previous combo.
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        await asyncio.sleep(0.15)
+        loc = page.locator(f"#{cid}").first
+        try:
+            await loc.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
+        # Two attempts — Rippling sometimes needs a focus before the second
+        # click registers as "open". Retry if first yields no options.
+        opts: list[str] = []
+        for attempt in range(2):
+            try:
+                await loc.click(timeout=2000, force=True)
+            except Exception as e:
+                logger.debug("combobox-options: click {} failed: {}", cid, e)
+                break
+            await asyncio.sleep(0.7)
+            opts = await page.evaluate(
+                """(cid) => {
+                    const el = document.getElementById(cid);
+                    if (!el) return [];
+                    const lbId = el.getAttribute('aria-controls');
+                    const lb = lbId ? document.getElementById(lbId) : null;
+                    const seen = new Set();
+                    const out = [];
+                    // Prefer the scoped listbox; fall back to ALL visible
+                    // options on the page (Rippling sometimes portals
+                    // them to <body> without a stable id).
+                    const sources = lb ? [lb] : [document];
+                    for (const root of sources) {
+                        for (const o of root.querySelectorAll('[role=option]')) {
+                            const r = o.getBoundingClientRect();
+                            if (r.width < 1 || r.height < 1) continue;
+                            const t = (o.textContent || '').trim();
+                            if (!t || t.length >= 100 || seen.has(t)) continue;
+                            seen.add(t); out.push(t);
+                            if (out.length >= 80) break;
+                        }
+                    }
+                    return out;
+                }""",
+                cid,
+            )
+            if opts:
+                break
+            # Close + retry — perhaps the click just closed an
+            # already-open dropdown the previous iteration left behind.
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            await asyncio.sleep(0.2)
+        # Close so the next iteration starts cleanly.
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        await asyncio.sleep(0.15)
+        if opts:
+            found[cid] = {"options": opts, "label": label}
+        else:
+            logger.debug("combobox-options: no options collected for #{}", cid)
+    return found
+
+
 async def snapshot_form_html(page, max_chars: int = 120000) -> str:
-    """Capture cleaned form HTML for the LLM. Strips scripts/styles, big
-    base64 data, and elements with no fillable controls. Trims to fit the
-    LLM context budget."""
+    """Capture cleaned form HTML for the LLM, augmented with each combobox's
+    real option strings (which live in a portal'd listbox, NOT in form HTML).
+
+    Strips scripts/styles, big base64 data, oversized class names. Trims to
+    fit the LLM context budget.
+    """
+    # Enrich first — get real option strings before we serialize the form.
+    try:
+        combo_options = await _collect_combobox_options(page)
+    except Exception as e:
+        logger.debug("combobox enrichment failed: {}", e)
+        combo_options = {}
+
     raw = await page.evaluate(
         "() => { const r = document.querySelector('form') || document.body;"
         "  return r ? r.outerHTML : ''; }"
@@ -34,6 +178,22 @@ async def snapshot_form_html(page, max_chars: int = 120000) -> str:
     raw = re.sub(r'(data:[a-z+/-]+;base64,)[A-Za-z0-9+/=]{100,}',
                  r'\1<truncated>', raw)
     raw = re.sub(r"\s+", " ", raw)
+
+    # Inject the option strings as a clear preamble — the LLM should pick
+    # values from these EXACT strings, not invent its own.
+    if combo_options:
+        preamble_lines = ["", "COMBOBOX FIELDS (use the EXACT option text as the value):"]
+        for cid, payload in combo_options.items():
+            opts = payload["options"]
+            label = payload["label"]
+            opts_short = " | ".join(o[:60] for o in opts[:30])
+            preamble_lines.append(
+                f"  #{cid}  question/label: {label!r}\n"
+                f"             options: {opts_short}"
+            )
+        raw = "\n".join(preamble_lines) + "\n\n" + raw
+        logger.info("snapshot: enriched with {} combobox option lists", len(combo_options))
+
     if len(raw) > max_chars:
         raw = raw[: max_chars // 2] + "\n...[truncated]...\n" + raw[-max_chars // 2 :]
     return raw
@@ -93,9 +253,12 @@ Rules:
   ALWAYS pick a "Decline to specify" / "Prefer not to answer" / "I don't wish to
   answer" option if available. If the only options are concrete categories, pick
   the most accurate (Sergey is male, Russian, no military service, no disability).
-- For ANY combobox you can see in the HTML, infer the likely option set and emit
-  select_combobox even if you can't see the option list inline — the executor
-  will type your value to filter and click the matching option.
+- For ANY combobox: the EXACT option strings are listed at the very top of
+  the form snippet under "COMBOBOX OPTIONS". Use one of those strings VERBATIM
+  as `value` — the executor opens the dropdown and clicks the matching option,
+  so your value MUST match exactly. If a phone-country picker shows options
+  like "+382 ME - Montenegro", that ENTIRE string is the value, not just
+  "Montenegro" or "+382".
 {error_block}
 
 CANDIDATE PROFILE:
@@ -260,9 +423,24 @@ async def execute_actions(page, actions: list[dict]) -> int:
                 clicked = False
 
                 async def _click_option(want: str) -> bool:
-                    """Find an option matching `want` (exact-then-substring)
-                    inside the active listbox, click it. Returns success."""
-                    # Try the scoped listbox first; fall back to all options.
+                    """Find an option matching `want` and click it. Tries
+                    progressively looser matches so a value like
+                    "+382 ME - Montenegro" still matches an actual option
+                    "+382 ME - United States" (Claude often invents the
+                    descriptive suffix because virtual-scroll hides the
+                    full option list at snapshot time).
+
+                    Match priority:
+                      1. exact text (case-insensitive)
+                      2. option starts with `want`
+                      3. `want` startswith option (for short option labels)
+                      4. distinctive-prefix match — first 2 alphanum tokens
+                         of `want` (e.g. "+382 ME") found at start of option
+                      5. substring (option contains want)
+
+                    Uses `force=True` on click — sticky submit groups often
+                    overlap the listbox bottom; force bypasses that.
+                    """
                     if listbox_id:
                         scope_selectors = [
                             f"#{listbox_id} [role='option']",
@@ -275,37 +453,51 @@ async def execute_actions(page, actions: list[dict]) -> int:
                             "[role='option']",
                         ]
                     want_low = want.strip().lower()
+                    # Distinctive prefix = first 1-2 non-space tokens
+                    # joined. For "+382 ME - Montenegro" → "+382 me".
+                    tokens = re.findall(r"\S+", want)
+                    distinctive = (" ".join(tokens[:2]).lower()
+                                   if len(tokens) >= 2 else
+                                   (tokens[0].lower() if tokens else ""))
                     for scope in scope_selectors:
                         opts = page.locator(scope)
                         n = await opts.count()
                         if n == 0:
                             continue
-                        # Build a list of (idx, text) so we can pick the
-                        # best match (exact > prefix > substring).
-                        exact_idx = prefix_idx = sub_idx = -1
-                        for i in range(min(n, 60)):
+                        exact_idx = pfx_idx = rev_pfx_idx = dist_idx = sub_idx = -1
+                        for i in range(min(n, 80)):
                             try:
                                 t = (await opts.nth(i).text_content()) or ""
                             except Exception:
                                 continue
-                            t_low = t.strip().lower()
+                            # Normalize whitespace (Rippling uses U+00A0)
+                            t_low = re.sub(r"\s+", " ", t.strip()).lower()
                             if not t_low:
                                 continue
                             if t_low == want_low and exact_idx < 0:
                                 exact_idx = i
-                            elif t_low.startswith(want_low) and prefix_idx < 0:
-                                prefix_idx = i
+                            elif t_low.startswith(want_low) and pfx_idx < 0:
+                                pfx_idx = i
+                            elif want_low.startswith(t_low) and len(t_low) >= 3 and rev_pfx_idx < 0:
+                                rev_pfx_idx = i
+                            elif distinctive and t_low.startswith(distinctive) and dist_idx < 0:
+                                dist_idx = i
                             elif want_low in t_low and sub_idx < 0:
                                 sub_idx = i
-                        pick = exact_idx if exact_idx >= 0 else (
-                            prefix_idx if prefix_idx >= 0 else sub_idx
-                        )
+                        pick = -1
+                        for cand in (exact_idx, pfx_idx, rev_pfx_idx, dist_idx, sub_idx):
+                            if cand >= 0:
+                                pick = cand
+                                break
                         if pick >= 0:
                             try:
                                 await opts.nth(pick).scroll_into_view_if_needed(
                                     timeout=1500,
                                 )
-                                await opts.nth(pick).click(timeout=2000)
+                            except Exception:
+                                pass
+                            try:
+                                await opts.nth(pick).click(timeout=2000, force=True)
                                 return True
                             except Exception as e:
                                 logger.debug("option click failed: {}", e)
@@ -313,35 +505,62 @@ async def execute_actions(page, actions: list[dict]) -> int:
 
                 clicked = await _click_option(value)
 
-                # 2) Not found → type to filter (only if there's an inner
-                # input — Rippling's pure-DIV combobox accepts keystrokes
-                # via .type(), which Playwright sends to the focused element.
-                # `trigger` was set to inner-input above when one exists.
+                # Not in the (possibly virtual-scrolled) listbox view —
+                # filter by typing. Use press_sequentially (real char-by-char
+                # keystrokes scoped to the trigger element) instead of
+                # locator.fill — Headless-UI / Rippling listens for React
+                # onChange driven by KeyboardEvent, not the bare native
+                # setter. Pick ONE distinctive prefix instead of looping
+                # candidates so the user doesn't see churn:
+                #   - if value has digits → use first 3-4 digits
+                #     (e.g. "+382 ME - Montenegro" → "382" filters cleanly)
+                #   - else use the last word (e.g. "Bar, Montenegro" → "Bar")
+                #   - else first 5 chars of trimmed value
                 if not clicked:
+                    digits = re.sub(r"\D", "", value)
+                    if digits:
+                        type_str = digits[:4]
+                    else:
+                        last_word = re.split(r"[\s,]+", value.strip())[-1]
+                        type_str = last_word[:8] if last_word else value[:5]
                     try:
-                        # If trigger is an INPUT, fill works; otherwise fall
-                        # back to page.keyboard.type AFTER ensuring focus
-                        # via trigger.focus().
                         is_input = await trigger.evaluate(
                             "el => el.tagName === 'INPUT' || el.isContentEditable"
                         )
                         if is_input:
-                            await trigger.fill(value, timeout=1500)
+                            # Element-scoped clear + slow type — guaranteed
+                            # to land on this input regardless of focus
+                            # state, no risk of falling through to the
+                            # browser address bar.
+                            await trigger.click()
+                            await trigger.press("Control+A")
+                            await trigger.press("Delete")
+                            await trigger.press_sequentially(type_str, delay=80)
                         else:
-                            # DIV combobox: focus first, then type. Playwright
-                            # routes to focused element — and we just clicked
-                            # this trigger so it has focus.
+                            # DIV combobox — click already opened it; type
+                            # via page.keyboard since the DIV won't accept
+                            # locator.press_sequentially.
                             await trigger.focus()
-                            await page.keyboard.type(value, delay=30)
-                        await asyncio.sleep(0.7)
+                            await page.keyboard.type(type_str, delay=80)
+                        await asyncio.sleep(0.9)
                         clicked = await _click_option(value)
                     except Exception as e:
-                        logger.debug("page-filler: combobox filter+click failed: {}", e)
+                        logger.debug(
+                            "page-filler: type-filter prefix={!r} failed: {}",
+                            type_str, e,
+                        )
 
                 if clicked:
+                    logger.info(
+                        "select_combobox: {} → {!r} ✓", sel, value,
+                    )
                     done += 1
                     await asyncio.sleep(0.4)
                     continue
+                logger.warning(
+                    "select_combobox: {} → {!r} ✗ (no option matched)",
+                    sel, value,
+                )
                 option_xy = None
                 # Find and click the option whose visible text matches `value`.
                 option_xy = await page.evaluate(

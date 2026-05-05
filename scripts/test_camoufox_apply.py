@@ -38,8 +38,12 @@ async def main(url: str) -> None:
     result = await run_external_apply(url, ctx, headless=False)
     logger.info("RESULT: success={} ats={} fields={} detail={}",
                 result.success, result.ats_name, result.fields_filled, result.detail)
-    # Keep browser open a bit for inspection
     await asyncio.sleep(15)
+
+
+# Convenience: also expose a 'list what's still missing' helper that the
+# user can call from the REPL or via a separate driver. Saved here so it
+# stays alongside the test for now.
 
 
 if __name__ == "__main__":
