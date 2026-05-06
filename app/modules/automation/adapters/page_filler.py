@@ -572,103 +572,58 @@ async def execute_actions(page, actions: list[dict]) -> int:
                                 logger.debug("option click failed: {}", e)
                     return False
 
-                # Primary path: click matching option. Works for
-                # DIV-based listbox combos (Pronouns, EEO) and most
-                # INPUT typeaheads when not React-state-locked.
+                # OLD-Selenium-pattern: _click_option first (works for
+                # already-rendered listboxes), if not found type FULL
+                # answer into inner input → re-search options → click.
+                # NO Enter press — Rippling commits via the option click
+                # itself, and Enter on a non-matching input clears the
+                # whole field on some Headless-UI variants.
                 clicked = await _click_option(value)
 
-                # For INPUT typeaheads where click ✓ but React state
-                # ignores it (Rippling work-permit country): wait 1.5s
-                # for React to settle, check input.value, fall back to
-                # type-prefix + Enter if still empty. The wait IS
-                # important — the prior "instant verify" check returned
-                # non-empty because the canonical setter just ran but
-                # then React reset. Settle then re-read.
-                if clicked:
-                    try:
-                        is_input_like = await trigger.evaluate(
-                            "el => el.tagName === 'INPUT' "
-                            "|| el.tagName === 'TEXTAREA'",
-                        )
-                    except Exception:
-                        is_input_like = False
-                    if is_input_like:
-                        # ALWAYS run keyboard rescue for INPUT typeaheads.
-                        # The "verify then fallback" pattern doesn't work
-                        # because canonical-setter temporarily sets value
-                        # → verify reads non-empty → skips rescue → React
-                        # later resets → field stays empty. Just always
-                        # do the keyboard pattern; for cases where the
-                        # click already worked, this is a redundant ~2s
-                        # re-fill that lands on the same value.
-                        digits = re.sub(r"\D", "", value)
-                        if digits:
-                            prefix = digits[:4]
-                        else:
-                            last_word = re.split(r"[\s,]+", value.strip())[-1]
-                            prefix = last_word[:8] if last_word else value[:5]
-                        try:
-                            # Close any leftover dropdown before re-opening
-                            await page.keyboard.press("Escape")
-                            await asyncio.sleep(0.2)
-                            await trigger.click(timeout=1500)
-                            await trigger.press("Control+A")
-                            await trigger.press("Delete")
-                            await trigger.press_sequentially(prefix, delay=60)
-                            await asyncio.sleep(0.6)
-                            await trigger.press("Enter")
-                            await asyncio.sleep(0.4)
-                            logger.info(
-                                "select_combobox: {} → {!r} ✓ + type+Enter commit",
-                                sel, value,
-                            )
-                        except Exception as e:
-                            logger.debug("type+Enter commit failed: {}", e)
-
-                # Not in the (possibly virtual-scrolled) listbox view —
-                # filter by typing. Use press_sequentially (real char-by-char
-                # keystrokes scoped to the trigger element) instead of
-                # locator.fill — Headless-UI / Rippling listens for React
-                # onChange driven by KeyboardEvent, not the bare native
-                # setter. Pick ONE distinctive prefix instead of looping
-                # candidates so the user doesn't see churn:
-                #   - if value has digits → use first 3-4 digits
-                #     (e.g. "+382 ME - Montenegro" → "382" filters cleanly)
-                #   - else use the last word (e.g. "Bar, Montenegro" → "Bar")
-                #   - else first 5 chars of trimmed value
+                # Old-Selenium fallback: type the FULL answer into the
+                # inner search input → list filters → re-search options
+                # → click match. NOT a prefix — typing the full answer
+                # is what the working 93ae74f commit did, and it's
+                # what filters Rippling's listbox to a single matching
+                # row even when option text is unusual.
                 if not clicked:
-                    digits = re.sub(r"\D", "", value)
-                    if digits:
-                        type_str = digits[:4]
-                    else:
-                        last_word = re.split(r"[\s,]+", value.strip())[-1]
-                        type_str = last_word[:8] if last_word else value[:5]
                     try:
                         is_input = await trigger.evaluate(
                             "el => el.tagName === 'INPUT' || el.isContentEditable"
                         )
                         if is_input:
-                            # Element-scoped clear + slow type — guaranteed
-                            # to land on this input regardless of focus
-                            # state, no risk of falling through to the
-                            # browser address bar.
+                            # Element-scoped clear + type FULL value
                             await trigger.click()
                             await trigger.press("Control+A")
                             await trigger.press("Delete")
-                            await trigger.press_sequentially(type_str, delay=80)
+                            await trigger.press_sequentially(value, delay=60)
                         else:
-                            # DIV combobox — click already opened it; type
-                            # via page.keyboard since the DIV won't accept
-                            # locator.press_sequentially.
+                            # DIV combobox — focus then page.keyboard.type
                             await trigger.focus()
-                            await page.keyboard.type(type_str, delay=80)
+                            await page.keyboard.type(value, delay=60)
                         await asyncio.sleep(0.9)
                         clicked = await _click_option(value)
+                        # If full value didn't filter to anything, try
+                        # a short distinctive prefix as last resort
+                        # (handles "Montenegro" vs option text
+                        # "+382 ME - X" mismatches).
+                        if not clicked:
+                            digits = re.sub(r"\D", "", value)
+                            prefix = digits[:4] if digits else (
+                                re.split(r"[\s,]+", value.strip())[-1][:8]
+                                if value else value[:5]
+                            )
+                            if prefix and prefix.lower() != value.lower():
+                                if is_input:
+                                    await trigger.press("Control+A")
+                                    await trigger.press("Delete")
+                                    await trigger.press_sequentially(prefix, delay=60)
+                                else:
+                                    await page.keyboard.type(prefix, delay=60)
+                                await asyncio.sleep(0.9)
+                                clicked = await _click_option(value)
                     except Exception as e:
-                        logger.debug(
-                            "page-filler: type-filter prefix={!r} failed: {}",
-                            type_str, e,
-                        )
+                        logger.debug("type-filter failed: {}", e)
 
                 if clicked:
                     logger.info(
