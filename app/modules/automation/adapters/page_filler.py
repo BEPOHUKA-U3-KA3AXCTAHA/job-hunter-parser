@@ -317,7 +317,7 @@ CANDIDATE PROFILE:
 FORM HTML:
 {form_html}
 """
-    pool = get_claude_cli_pool(workers=1, model="claude-sonnet-4-6", timeout_s=60)
+    pool = get_claude_cli_pool(workers=1, model="claude-sonnet-4-6", timeout_s=120)
     results = await pool.batch_generate([(system, user)])
     if not results or not results[0].ok:
         logger.warning("page-filler: Claude call failed: {}",
@@ -1014,7 +1014,7 @@ FIELDS TO FILL:
 {fields_block}
 """
     from app.modules.applies import get_claude_cli_pool
-    pool = get_claude_cli_pool(workers=1, model=model, timeout_s=45)
+    pool = get_claude_cli_pool(workers=1, model=model, timeout_s=90)
     results = await pool.batch_generate([(system, user)])
     if not results or not results[0].ok:
         logger.warning("incremental-fill: LLM call failed: {}",
