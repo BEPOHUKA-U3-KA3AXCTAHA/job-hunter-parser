@@ -35,7 +35,9 @@ async def main(url: str) -> None:
     )
     logger.info("ctx: company={} title={} resume={}",
                 ctx.company, ctx.job_title, ctx.resume_path)
-    result = await run_external_apply(url, ctx, headless=False)
+    result = await run_external_apply(
+        url, ctx, headless=False, screenshot_dir="/tmp/jhp_diag/frames",
+    )
     logger.info("RESULT: success={} ats={} fields={} detail={}",
                 result.success, result.ats_name, result.fields_filled, result.detail)
     await asyncio.sleep(15)

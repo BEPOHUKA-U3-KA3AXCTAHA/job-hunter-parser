@@ -89,25 +89,42 @@ class GenericHandler(AtsHandler):
                 logger.info("generic: resume uploaded via {}", sel)
                 break
 
-        # LLM autofill loop — page-snapshot Claude sees the WHOLE form +
-        # whatever errors the prior submit raised, returns an action plan.
+        # LLM autofill loop. Strategy:
+        #   attempt 1 — full form snapshot + Sonnet, fills everything
+        #     visible. Slow (~80s) but covers all fields in one shot.
+        #   attempt 2-N — INCREMENTAL: detect blockers via JS, hand
+        #     Claude (Haiku) only those fields with their cached options.
+        #     Fast (~5-15s) and avoids re-opening already-filled
+        #     comboboxes (which clobbers their state in Headless-UI).
         from app.modules.automation.adapters.page_filler import (
-            fill_form_via_page_snapshot,
+            fill_form_via_page_snapshot, fill_blockers_incrementally,
+            detect_required_blockers,
         )
         from app.modules.users import CandidateProfile
         profile = CandidateProfile()
 
         last_errors: list[str] = []
-        MAX_ATTEMPTS = 5  # forms with conditional fields (sponsorship→work
-                          # permit country etc.) reveal new required inputs
-                          # after each fill; need a few iterations to settle
+        MAX_ATTEMPTS = 5
+        # Shared cache so combobox dropdowns are opened ONCE across all
+        # attempts (saves ~8s/attempt + prevents value-clobber).
+        options_cache: dict[str, dict] = {}
+
         for attempt in range(MAX_ATTEMPTS):
-            logger.info("generic[{}] attempt {}/{}: page-snapshot Claude pass",
-                        host, attempt + 1, MAX_ATTEMPTS)
-            done = await fill_form_via_page_snapshot(
-                page, profile.user_info or "", prior_errors=last_errors,
-            )
-            logger.info("generic[{}] attempt {}: page-filler executed {} action(s)",
+            if attempt == 0:
+                logger.info("generic[{}] attempt 1/{}: full snapshot + Sonnet",
+                            host, MAX_ATTEMPTS)
+                done = await fill_form_via_page_snapshot(
+                    page, profile.user_info or "",
+                    prior_errors=last_errors,
+                    options_cache=options_cache,
+                )
+            else:
+                logger.info("generic[{}] attempt {}/{}: incremental blocker fill (Haiku)",
+                            host, attempt + 1, MAX_ATTEMPTS)
+                done = await fill_blockers_incrementally(
+                    page, profile.user_info or "", options_cache,
+                )
+            logger.info("generic[{}] attempt {}: filled {} action(s)",
                         host, attempt + 1, done)
             filled += done
 
@@ -118,6 +135,18 @@ class GenericHandler(AtsHandler):
                 timeout=3,
             )
             if not submitted:
+                # If incremental fill made no progress, the next attempt
+                # will see the same state — same Haiku response, same
+                # 0 actions. Bail instead of burning 4 useless cycles.
+                if attempt > 0 and done == 0:
+                    last_errors = await detect_form_errors(page) or [
+                        "submit disabled; incremental-fill no progress"
+                    ]
+                    logger.warning(
+                        "generic[{}] incremental fill stalled at attempt {} — bailing",
+                        host, attempt + 1,
+                    )
+                    break
                 last_errors = await detect_form_errors(page) or [
                     "submit button still disabled — required fields missing"
                 ]
@@ -158,8 +187,12 @@ class GenericHandler(AtsHandler):
                             if (isCombo) {
                                 const text = (el.textContent || '').trim();
                                 const ph = el.getAttribute('aria-label') || 'Select';
-                                empty = !text || text.toLowerCase() === ph.toLowerCase()
-                                    || /^(select|choose)\\b/i.test(text);
+                                const t = text.toLowerCase();
+                                // Placeholder is LITERAL — don't regex
+                                // /^choose/ or we'll misclassify legit
+                                // values like 'Choose not to disclose'.
+                                empty = !text || t === ph.toLowerCase()
+                                    || t === 'select' || t === 'select...';
                                 val = text;
                             } else if (isRadio) {
                                 // Radio group: empty if no descendant input is checked

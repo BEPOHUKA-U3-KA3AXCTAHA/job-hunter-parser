@@ -19,9 +19,13 @@ import re
 from loguru import logger
 
 
-async def _collect_combobox_options(page) -> dict[str, list[str]]:
+async def _collect_combobox_options(
+    page, skip_ids: set[str] | None = None,
+) -> dict[str, dict]:
     """Open each [role=combobox] briefly, collect its option texts from the
-    associated listbox, close again. Returns {combobox_id: [opt, ...]}.
+    associated listbox, close again. Returns {cid: {options, label}}.
+
+    `skip_ids`: ids to skip outright (e.g. previously-cached ones).
 
     Why: Rippling/Headless-UI render listbox options into a portal in <body>
     only when the dropdown is open — they DON'T appear in form.outerHTML.
@@ -29,13 +33,37 @@ async def _collect_combobox_options(page) -> dict[str, list[str]]:
     when the actual option is "+382 ME"), and the picker silently rejects
     non-matching values.
     """
+    skip_ids = skip_ids or set()
+    # First call (no cache yet) → enrich ALL combobox options, even ones
+    # that look pre-filled. Many ATSes default phone-country to "+1 US"
+    # or similar; the LLM still needs to know the FULL option list to
+    # CHANGE that default.
+    # Subsequent calls (cache populated) → skip filled, since opening a
+    # filled combobox can clobber its React-side selection.
+    skip_filled = len(skip_ids) > 0
     combos = await page.evaluate(
-        """() => {
+        """(skipFilled) => {
             const out = [];
             for (const el of document.querySelectorAll('[role=combobox]')) {
                 if (!el.id) continue;
                 const r = el.getBoundingClientRect();
                 if (r.width < 4 || r.height < 4) continue;
+                if (skipFilled) {
+                    let filled = false;
+                    if (el.tagName === 'INPUT') {
+                        filled = !!(el.value || '').trim();
+                    } else {
+                        const text = (el.textContent || '').trim();
+                        const ph = el.getAttribute('aria-label') || 'Select';
+                        const phLow = ph.toLowerCase();
+                        const txtLow = text.toLowerCase();
+                        filled = !!text
+                            && txtLow !== phLow
+                            && txtLow !== 'select...'
+                            && txtLow !== 'select';
+                    }
+                    if (filled) continue;
+                }
                 // Find a meaningful label: aria-labelledby > <label for=id> >
                 // <legend> in nearest fieldset > nearest preceding label/text
                 let label = '';
@@ -78,11 +106,14 @@ async def _collect_combobox_options(page) -> dict[str, list[str]]:
                 out.push({id: el.id, label: label.slice(0, 200)});
             }
             return out;
-        }"""
+        }""",
+        skip_filled,
     )
     found: dict[str, dict] = {}
     for combo in combos:
         cid = combo["id"]
+        if cid in skip_ids:
+            continue
         label = combo.get("label", "")
         # Close any leftover open dropdown from the previous combo.
         try:
@@ -153,19 +184,31 @@ async def _collect_combobox_options(page) -> dict[str, list[str]]:
     return found
 
 
-async def snapshot_form_html(page, max_chars: int = 120000) -> str:
+async def snapshot_form_html(
+    page, max_chars: int = 30000,
+    options_cache: dict[str, dict] | None = None,
+) -> str:
     """Capture cleaned form HTML for the LLM, augmented with each combobox's
     real option strings (which live in a portal'd listbox, NOT in form HTML).
 
     Strips scripts/styles, big base64 data, oversized class names. Trims to
-    fit the LLM context budget.
+    fit the LLM context budget. Default 30K chars is plenty for 95% of
+    one-page ATSes; bump for unusually long forms.
+
+    `options_cache`: optional shared dict {combobox_id: {options, label}} that
+    survives across attempts so we don't re-open the same dropdowns each
+    iteration. Caller passes the same dict across calls to amortize the
+    8-dropdown-open cost (~8s saved per attempt after the first).
     """
-    # Enrich first — get real option strings before we serialize the form.
+    if options_cache is None:
+        options_cache = {}
+    # Enrich only NEW unfilled comboboxes — cached ones reuse stored options.
     try:
-        combo_options = await _collect_combobox_options(page)
+        new_options = await _collect_combobox_options(page, skip_ids=set(options_cache))
+        options_cache.update(new_options)
     except Exception as e:
         logger.debug("combobox enrichment failed: {}", e)
-        combo_options = {}
+    combo_options = options_cache
 
     raw = await page.evaluate(
         "() => { const r = document.querySelector('form') || document.body;"
@@ -652,14 +695,206 @@ async def execute_actions(page, actions: list[dict]) -> int:
 
 
 async def fill_form_via_page_snapshot(
-    page, profile_text: str, prior_errors: list[str] | None = None,
+    page, profile_text: str,
+    prior_errors: list[str] | None = None,
+    options_cache: dict[str, dict] | None = None,
 ) -> int:
     """End-to-end: snapshot form, ask Claude, execute. Returns count of
-    actions successfully executed (0 = no progress)."""
-    html = await snapshot_form_html(page)
+    actions successfully executed (0 = no progress).
+
+    `options_cache`: pass-through to snapshot_form_html for cross-call
+    combobox-option memoization.
+    """
+    html = await snapshot_form_html(page, options_cache=options_cache)
     if not html:
         return 0
     actions = await ask_claude_for_fill_plan(html, profile_text, prior_errors)
     if not actions:
         return 0
+    return await execute_actions(page, actions)
+
+
+async def detect_required_blockers(page) -> list[dict]:
+    """Find required-but-empty fields + aria-invalid fields, with a
+    meaningful label and (for comboboxes) ready-to-pick options.
+
+    Returns list of {id, tag, role, label, options, val} dicts. Comboboxes
+    get their option list inline (popping the dropdown is too slow at
+    blocker-check time; reuse the cache from the snapshot pass).
+    """
+    return await page.evaluate(
+        """() => {
+            function* dn(r){const s=[r];while(s.length){const n=s.pop();if(!n)continue;
+                if(n.nodeType===1)yield n;if(n.shadowRoot)s.push(n.shadowRoot);
+                const k=n.children||n.childNodes||[];for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+            const out = [];
+            for (const el of dn(document)) {
+                const tag = el.tagName;
+                if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT'
+                    && el.getAttribute && el.getAttribute('role') !== 'combobox'
+                    && el.getAttribute('role') !== 'radiogroup'
+                    && el.getAttribute('role') !== 'group') continue;
+                const req = el.required ||
+                    el.getAttribute('aria-required') === 'true';
+                const inv = el.getAttribute('aria-invalid') === 'true';
+                const role = el.getAttribute && el.getAttribute('role');
+                const isCombo = role === 'combobox';
+                const isRadio = role === 'radiogroup' || role === 'group';
+                let val = '', empty = false;
+                if (isCombo) {
+                    const text = (el.textContent || '').trim();
+                    const ph = el.getAttribute('aria-label') || 'Select';
+                    const t = text.toLowerCase();
+                    empty = !text || t === ph.toLowerCase()
+                        || t === 'select' || t === 'select...';
+                    val = text;
+                } else if (isRadio) {
+                    const checked = el.querySelector('input:checked');
+                    empty = !checked;
+                    val = checked ? (checked.value || 'checked') : '';
+                } else {
+                    val = (el.value || '').trim();
+                    empty = !val && tag !== 'BUTTON';
+                }
+                if (!((req && empty) || inv)) continue;
+                let label = '';
+                const lbId = el.getAttribute('aria-labelledby');
+                if (lbId) {
+                    const e = document.getElementById(lbId);
+                    if (e) label = (e.textContent || '').trim();
+                }
+                if (!label && el.id) {
+                    const ll = document.querySelector('label[for="' + el.id + '"]');
+                    if (ll) label = (ll.textContent || '').trim();
+                }
+                if (!label || label.length < 5 || /^select$/i.test(label)) {
+                    let p = el;
+                    for (let i = 0; i < 6 && p; i++) {
+                        const sib = p.previousElementSibling;
+                        if (sib) {
+                            const t = (sib.textContent || '').trim();
+                            if (t && t.length > 5 && t.length < 300) {
+                                label = t.slice(0, 200); break;
+                            }
+                        }
+                        p = p.parentElement;
+                    }
+                }
+                if (!label) {
+                    label = el.getAttribute('aria-label') ||
+                        el.getAttribute('placeholder') || '';
+                }
+                const r = el.getBoundingClientRect();
+                if (r.width < 4 || r.height < 4) continue;
+                out.push({
+                    id: el.id || '',
+                    tag: tag,
+                    role: role || '',
+                    label: label.slice(0, 200),
+                    val: val.slice(0, 60),
+                    inv: inv,
+                });
+            }
+            return out;
+        }"""
+    )
+
+
+async def fill_blockers_incrementally(
+    page, profile_text: str, options_cache: dict[str, dict],
+    model: str = "claude-haiku-4-5-20251001",
+) -> int:
+    """Fast follow-up pass: query blockers via JS (no LLM), build a tiny
+    prompt with ONLY blocker fields + their cached options, ask a fast
+    model (Haiku) for a JSON action plan, execute it.
+
+    Cuts attempt-2-N time from ~80s (full snapshot + Sonnet) to ~5-10s
+    (small prompt + Haiku) and avoids re-opening already-filled
+    comboboxes which can clobber their state.
+    """
+    blockers = await detect_required_blockers(page)
+    if not blockers:
+        return 0
+    # Try to open ANY blocker with an id that we haven't cached options
+    # for — Rippling's dynamic country picker shows up as INPUT with
+    # role='combobox' on the element itself rather than a wrapper, and
+    # `detect_required_blockers` reports `role=''` for it. Opening it
+    # the same way as a combobox harvests its options either way.
+    uncached = {b["id"] for b in blockers if b["id"] and b["id"] not in options_cache}
+    if uncached:
+        new_options = await _collect_combobox_options(
+            page, skip_ids=set(options_cache),
+        )
+        options_cache.update(new_options)
+    # Drop blockers that look like comboboxes but have no harvested
+    # options — better to skip than ask the LLM to guess (it makes up
+    # values like "Back-end Developer" for a country picker).
+    blockers = [
+        b for b in blockers
+        if not (b["role"] == "combobox" or b["label"].lower() in {"search", "select"})
+        or b["id"] in options_cache
+    ]
+    if not blockers:
+        logger.info("incremental-fill: all blockers are options-less comboboxes; skip")
+        return 0
+
+    # Build mini-prompt
+    sections = []
+    for b in blockers:
+        bid = b["id"] or "(no-id)"
+        line = f"#{bid}  {b['tag']} role={b['role']!r}  label={b['label']!r}"
+        if b["val"]:
+            line += f"  current_value={b['val']!r} (invalid={b['inv']})"
+        if b["role"] == "combobox" and b["id"] in options_cache:
+            opts = options_cache[b["id"]]["options"]
+            line += "\n  options: " + " | ".join(o[:60] for o in opts[:30])
+        sections.append(line)
+    fields_block = "\n\n".join(sections)
+
+    system = (
+        "You fill required fields the user previously skipped. Return ONLY a JSON "
+        "array of actions. No prose, no markdown."
+    )
+    user = f"""Required fields still empty or invalid. Pick a value for each.
+
+Action format (one object per field):
+  {{"action": "fill" | "click" | "select_combobox", "selector": "<CSS>", "value": "<text>"}}
+
+Rules:
+- For combobox: value MUST be one of the listed options (verbatim).
+- For phone-country/visa: pick "Yes" if user needs sponsorship, "No" if asked
+  whether authorized to work in US (assume non-US person unless profile says
+  otherwise).
+- EEO/demographic comboboxes: prefer "Decline to specify" / "Choose not to
+  disclose" / "I don't wish to answer" / "Prefer not to say" if available.
+- Use #id selectors when available.
+
+CANDIDATE PROFILE:
+{profile_text[:3000]}
+
+FIELDS TO FILL:
+{fields_block}
+"""
+    from app.modules.applies import get_claude_cli_pool
+    pool = get_claude_cli_pool(workers=1, model=model, timeout_s=45)
+    results = await pool.batch_generate([(system, user)])
+    if not results or not results[0].ok:
+        logger.warning("incremental-fill: LLM call failed: {}",
+                       results[0].error if results else "no result")
+        return 0
+    text = results[0].text.strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    m = re.search(r"\[[\s\S]*\]", text)
+    if not m:
+        logger.warning("incremental-fill: no JSON array in response: {}", text[:200])
+        return 0
+    try:
+        actions = json.loads(m.group(0))
+    except Exception as e:
+        logger.warning("incremental-fill: JSON parse failed: {}", e)
+        return 0
+    if not isinstance(actions, list) or not actions:
+        return 0
+    logger.info("incremental-fill: {} blockers → {} actions",
+                len(blockers), len(actions))
     return await execute_actions(page, actions)

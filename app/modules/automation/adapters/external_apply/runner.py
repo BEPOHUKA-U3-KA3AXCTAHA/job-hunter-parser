@@ -21,13 +21,25 @@ from app.modules.automation.adapters.external_apply.dispatcher import pick_handl
 from app.modules.automation.ports.external_apply import AtsContext, AtsResult
 
 
-async def run_external_apply(url: str, ctx: AtsContext, headless: bool = False) -> AtsResult:
+async def run_external_apply(
+    url: str,
+    ctx: AtsContext,
+    headless: bool = False,
+    screenshot_dir: str | None = None,
+) -> AtsResult:
     """Open a Camoufox session, navigate to `url`, dispatch + run the
-    matching ATS handler. Returns the AtsResult."""
+    matching ATS handler. Returns the AtsResult.
+
+    `screenshot_dir` (optional): drop a PNG frame every 2s here so we
+    can replay the run visually afterwards (Camoufox doesn't support
+    Playwright video recording).
+    """
     handler = pick_handler(url)
     logger.info("camoufox apply: ATS={} URL={}", handler.name, url[:120])
 
-    async with browser_session(headless=headless) as page:
+    async with browser_session(
+        headless=headless, screenshot_dir=screenshot_dir,
+    ) as page:
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
