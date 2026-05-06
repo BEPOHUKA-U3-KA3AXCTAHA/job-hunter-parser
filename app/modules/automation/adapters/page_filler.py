@@ -565,6 +565,23 @@ async def execute_actions(page, actions: list[dict]) -> int:
                                 )
                             except Exception:
                                 pass
+                            # Use page.mouse.click(x, y) on the option's
+                            # center coords — this generates an OS-level
+                            # pointer event with isTrusted=true, which
+                            # some React-controlled comboboxes (Rippling
+                            # work-permit country) need for their
+                            # onChange to fire. Fall back to locator.click
+                            # if the bounding box can't be read.
+                            try:
+                                box = await opts.nth(pick).bounding_box()
+                                if box:
+                                    cx = box["x"] + box["width"] / 2
+                                    cy = box["y"] + box["height"] / 2
+                                    await page.mouse.click(cx, cy)
+                                    return True
+                            except Exception as e:
+                                logger.debug("mouse.click on option failed: {}", e)
+                            # Last resort: element-scoped click
                             try:
                                 await opts.nth(pick).click(timeout=2000, force=True)
                                 return True
