@@ -44,6 +44,12 @@ async def _collect_combobox_options(
     combos = await page.evaluate(
         """(skipFilled) => {
             const out = [];
+            // Light-DOM only, [role=combobox] only — every variant we've
+            // tried widening this selector caused regressions
+            // (duplicate refs, hidden hits, weird state interference).
+            // For dynamic/shadow-DOM blockers, fill_blockers_incrementally
+            // does a targeted Playwright-locator open-by-id which crosses
+            // shadow boundaries safely without polluting this discovery.
             for (const el of document.querySelectorAll('[role=combobox]')) {
                 if (!el.id) continue;
                 const r = el.getBoundingClientRect();
@@ -179,8 +185,9 @@ async def _collect_combobox_options(
         await asyncio.sleep(0.15)
         if opts:
             found[cid] = {"options": opts, "label": label}
+            logger.info("combo-enrich: #{} → {} options ({})", cid, len(opts), label[:60])
         else:
-            logger.debug("combobox-options: no options collected for #{}", cid)
+            logger.warning("combo-enrich: #{} OPENED but 0 options ({})", cid, label[:60])
     return found
 
 
@@ -310,7 +317,7 @@ CANDIDATE PROFILE:
 FORM HTML:
 {form_html}
 """
-    pool = get_claude_cli_pool(workers=1, model="claude-sonnet-4-6", timeout_s=180)
+    pool = get_claude_cli_pool(workers=1, model="claude-sonnet-4-6", timeout_s=60)
     results = await pool.batch_generate([(system, user)])
     if not results or not results[0].ok:
         logger.warning("page-filler: Claude call failed: {}",
@@ -457,8 +464,25 @@ async def execute_actions(page, actions: list[dict]) -> int:
                 listbox_id = None
                 try:
                     # Get aria-controls from the combobox we clicked on.
-                    listbox_id = await page.locator(sel).first.get_attribute(
-                        "aria-controls", timeout=500,
+                    # Walk shadow DOM via JS — page.locator handles shadow
+                    # but get_attribute on a deep id isn't always reliable.
+                    listbox_id = await page.evaluate(
+                        """(s) => {
+                            function* dn(r){const s=[r];while(s.length){
+                                const n=s.pop();if(!n)return;
+                                if(n.nodeType===1)yield n;
+                                if(n.shadowRoot)s.push(n.shadowRoot);
+                                const k=n.children||n.childNodes||[];
+                                for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                            const id = s.replace(/^#/, '');
+                            for (const e of dn(document)) {
+                                if (e.id === id) {
+                                    return e.getAttribute('aria-controls');
+                                }
+                            }
+                            return null;
+                        }""",
+                        sel,
                     )
                 except Exception:
                     pass
@@ -485,11 +509,13 @@ async def execute_actions(page, actions: list[dict]) -> int:
                     overlap the listbox bottom; force bypasses that.
                     """
                     if listbox_id:
-                        scope_selectors = [
-                            f"#{listbox_id} [role='option']",
-                            "[role='listbox'] [role='option']",
-                            "[role='option']",
-                        ]
+                        # STRICT scope — never fall back to [role=option]
+                        # global, which silently picks a neighbouring
+                        # listbox's stale options on a multi-combobox
+                        # form (e.g. Aalyria's two country pickers
+                        # share the same option text "+382 ME - United
+                        # States" but live in different listboxes).
+                        scope_selectors = [f"#{listbox_id} [role='option']"]
                     else:
                         scope_selectors = [
                             "[role='listbox'] [role='option']",
@@ -815,6 +841,9 @@ async def fill_blockers_incrementally(
     blockers = await detect_required_blockers(page)
     if not blockers:
         return 0
+    for b in blockers:
+        logger.info("blocker: #{} tag={} role={!r} label={!r} val={!r}",
+                    b["id"], b["tag"], b["role"], b["label"], b["val"])
     # Try to open ANY blocker with an id that we haven't cached options
     # for — Rippling's dynamic country picker shows up as INPUT with
     # role='combobox' on the element itself rather than a wrapper, and
@@ -826,6 +855,115 @@ async def fill_blockers_incrementally(
             page, skip_ids=set(options_cache),
         )
         options_cache.update(new_options)
+    # Targeted fallback for blockers STILL without options: open them
+    # one by one via Playwright locator (which crosses shadow DOM
+    # transparently). Catches dynamic conditional fields that appear
+    # after the first fill (e.g. work-permit country revealed after
+    # sponsorship=Yes) which the bulk light-DOM enrichment missed.
+    for b in blockers:
+        bid = b["id"]
+        if not bid or bid in options_cache:
+            continue
+        try:
+            loc = page.locator(f"#{bid}").first
+            if await loc.count() == 0:
+                continue
+            await loc.scroll_into_view_if_needed(timeout=1500)
+            await loc.click(timeout=2000, force=True)
+            await asyncio.sleep(0.7)
+            # NB: walk shadow DOM to find both the trigger AND its
+            # listbox — field-136 (work-permit country revealed after
+            # sponsorship=Yes) lives in a shadow root, document.
+            # getElementById is scoped to top-level document and returns
+            # null, which would silently fall back to global [role=option]
+            # and pull options from a NEIGHBOURING combobox's stale
+            # listbox. Then "click option ✓" succeeds on the wrong
+            # element → the actual field stays empty.
+            harvest_js = """(bid) => {
+                function* dn(r){const s=[r];while(s.length){const n=s.pop();
+                    if(!n)return;if(n.nodeType===1)yield n;
+                    if(n.shadowRoot)s.push(n.shadowRoot);
+                    const k=n.children||n.childNodes||[];
+                    for(let i=k.length-1;i>=0;i--)s.push(k[i]);}}
+                let el = null;
+                for (const e of dn(document)) {
+                    if (e.id === bid) { el = e; break; }
+                }
+                if (!el) return [];
+                // The listbox is portal'd to <body> with the same id
+                // suffix; query it by id from EVERY root we can reach.
+                const lbId = el.getAttribute('aria-controls');
+                let lb = null;
+                if (lbId) {
+                    for (const e of dn(document)) {
+                        if (e.id === lbId) { lb = e; break; }
+                    }
+                }
+                const seen = new Set(); const out = [];
+                if (!lb) return out; // refuse to fall back to global —
+                                     // would pick neighbouring listbox's
+                                     // stale options and silently misclick.
+                for (const o of lb.querySelectorAll('[role=option]')) {
+                    const r = o.getBoundingClientRect();
+                    if (r.width < 1 || r.height < 1) continue;
+                    const t = (o.textContent || '').trim();
+                    if (!t || t.length >= 100 || seen.has(t)) continue;
+                    seen.add(t); out.push(t);
+                    if (out.length >= 80) break;
+                }
+                return out;
+            }"""
+            opts = await page.evaluate(harvest_js, bid)
+            # Typeahead fallback — INPUT comboboxes that load options
+            # via API on type. Try a short distinctive prefix derived
+            # from the candidate's profile (digits from phone for
+            # country pickers, "Mont" for location, etc.) then re-
+            # harvest. If still 0, give up.
+            if not opts and b["tag"] == "INPUT":
+                lbl_low = b["label"].lower()
+                # Heuristic prefixes — universal, not site-specific
+                guesses: list[str] = []
+                if any(k in lbl_low for k in ["country", "phone", "search"]):
+                    # Try the candidate's phone country code
+                    prof_phone = re.search(r"\+(\d{1,4})", profile_text or "")
+                    if prof_phone:
+                        guesses.append(prof_phone.group(1)[:4])
+                if any(k in lbl_low for k in ["city", "location", "town"]):
+                    # Use first word of profile location line
+                    m = re.search(r"location\s*:\s*([^\s,(]+)",
+                                  profile_text or "", re.I)
+                    if m:
+                        guesses.append(m.group(1)[:4])
+                guesses.append("a")  # absolute last resort to trigger any list
+                for g in guesses:
+                    try:
+                        # Element-scoped clear+type — never targets browser chrome
+                        await loc.click(timeout=1500)
+                        await loc.press("Control+A")
+                        await loc.press("Delete")
+                        await loc.press_sequentially(g, delay=80)
+                        await asyncio.sleep(0.9)
+                        opts = await page.evaluate(harvest_js, bid)
+                        if opts:
+                            logger.info(
+                                "blocker-enrich: #{} typed {!r} → {} options",
+                                bid, g, len(opts),
+                            )
+                            break
+                    except Exception as e:
+                        logger.debug("type-prefix {!r} failed: {}", g, e)
+            try: await page.keyboard.press("Escape")
+            except Exception: pass
+            await asyncio.sleep(0.2)
+            if opts:
+                options_cache[bid] = {"options": opts, "label": b["label"]}
+                logger.info("blocker-enrich: #{} → {} options ({})",
+                            bid, len(opts), b["label"][:60])
+            else:
+                logger.warning("blocker-enrich: #{} OPENED but 0 options ({})",
+                               bid, b["label"][:60])
+        except Exception as e:
+            logger.debug("blocker-enrich #{} failed: {}", bid, e)
     # Drop blockers that look like comboboxes but have no harvested
     # options — better to skip than ask the LLM to guess (it makes up
     # values like "Back-end Developer" for a country picker).

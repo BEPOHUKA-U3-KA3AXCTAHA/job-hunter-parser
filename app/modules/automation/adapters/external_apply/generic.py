@@ -104,10 +104,12 @@ class GenericHandler(AtsHandler):
         profile = CandidateProfile()
 
         last_errors: list[str] = []
-        MAX_ATTEMPTS = 5
-        # Shared cache so combobox dropdowns are opened ONCE across all
-        # attempts (saves ~8s/attempt + prevents value-clobber).
+        MAX_ATTEMPTS = 2  # 1 full Sonnet pass + 1 incremental Haiku retry.
+        # Conditional/hidden-on-load fields might survive but the user
+        # would rather get a fast "fill 90%" + manual finish than wait
+        # for 5 LLM cycles.
         options_cache: dict[str, dict] = {}
+        last_blocker_ids: set[str] = set()
 
         for attempt in range(MAX_ATTEMPTS):
             if attempt == 0:
@@ -135,18 +137,6 @@ class GenericHandler(AtsHandler):
                 timeout=3,
             )
             if not submitted:
-                # If incremental fill made no progress, the next attempt
-                # will see the same state — same Haiku response, same
-                # 0 actions. Bail instead of burning 4 useless cycles.
-                if attempt > 0 and done == 0:
-                    last_errors = await detect_form_errors(page) or [
-                        "submit disabled; incremental-fill no progress"
-                    ]
-                    logger.warning(
-                        "generic[{}] incremental fill stalled at attempt {} — bailing",
-                        host, attempt + 1,
-                    )
-                    break
                 last_errors = await detect_form_errors(page) or [
                     "submit button still disabled — required fields missing"
                 ]
