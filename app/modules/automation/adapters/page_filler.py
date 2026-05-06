@@ -574,6 +574,48 @@ async def execute_actions(page, actions: list[dict]) -> int:
 
                 clicked = await _click_option(value)
 
+                # CRITICAL — for INPUT-typeahead comboboxes (Rippling
+                # work-permit country, Ashby textareas, etc.) the option
+                # click reports ✓ but the React onChange handler isn't
+                # subscribed to that click — it's subscribed to the
+                # canonical HTMLInputElement.prototype.value setter.
+                # ALWAYS run canonical-setter commit for INPUT/TEXTAREA
+                # comboboxes after a successful click. Idempotent —
+                # if React already saw the right value via the click,
+                # this is a no-op; if not, it forces the React-side
+                # state to match.
+                if clicked:
+                    try:
+                        is_input_like = await trigger.evaluate(
+                            "el => el.tagName === 'INPUT' "
+                            "|| el.tagName === 'TEXTAREA' "
+                            "|| el.isContentEditable"
+                        )
+                    except Exception:
+                        is_input_like = False
+                    if is_input_like:
+                        try:
+                            await trigger.evaluate(
+                                r"""(el, val) => {
+                                    const ctor = el.tagName === 'TEXTAREA'
+                                        ? window.HTMLTextAreaElement
+                                        : window.HTMLInputElement;
+                                    const desc = ctor && Object.getOwnPropertyDescriptor(
+                                        ctor.prototype, 'value');
+                                    if (desc && desc.set) desc.set.call(el, val);
+                                    else el.value = val;
+                                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                                }""",
+                                value,
+                            )
+                            logger.info(
+                                "select_combobox: {} → {!r} ✓ + canonical-setter commit",
+                                sel, value,
+                            )
+                        except Exception as e:
+                            logger.warning("canonical-setter commit failed: {}", e)
+
                 # Not in the (possibly virtual-scrolled) listbox view —
                 # filter by typing. Use press_sequentially (real char-by-char
                 # keystrokes scoped to the trigger element) instead of
@@ -716,6 +758,14 @@ async def execute_actions(page, actions: list[dict]) -> int:
                 logger.debug("page-filler: unknown action {}", action)
         except Exception as e:
             logger.debug("page-filler: action {} on {} failed: {}", action, sel[:60], e)
+        # Universal cleanup between actions: dismiss any dropdown that
+        # might still be open. Otherwise the next click can land on a
+        # stale option from the prior listbox + the bot "hangs" because
+        # the actual target is overlapped.
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
         await asyncio.sleep(0.25)
     return done
 
