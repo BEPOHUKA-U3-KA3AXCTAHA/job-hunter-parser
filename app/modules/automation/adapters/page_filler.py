@@ -572,49 +572,58 @@ async def execute_actions(page, actions: list[dict]) -> int:
                                 logger.debug("option click failed: {}", e)
                     return False
 
+                # Primary path: click matching option. Works for
+                # DIV-based listbox combos (Pronouns, EEO) and most
+                # INPUT typeaheads when not React-state-locked.
                 clicked = await _click_option(value)
 
-                # CRITICAL — for INPUT-typeahead comboboxes (Rippling
-                # work-permit country, Ashby textareas, etc.) the option
-                # click reports ✓ but the React onChange handler isn't
-                # subscribed to that click — it's subscribed to the
-                # canonical HTMLInputElement.prototype.value setter.
-                # ALWAYS run canonical-setter commit for INPUT/TEXTAREA
-                # comboboxes after a successful click. Idempotent —
-                # if React already saw the right value via the click,
-                # this is a no-op; if not, it forces the React-side
-                # state to match.
+                # For INPUT typeaheads where click ✓ but React state
+                # ignores it (Rippling work-permit country): wait 1.5s
+                # for React to settle, check input.value, fall back to
+                # type-prefix + Enter if still empty. The wait IS
+                # important — the prior "instant verify" check returned
+                # non-empty because the canonical setter just ran but
+                # then React reset. Settle then re-read.
                 if clicked:
                     try:
                         is_input_like = await trigger.evaluate(
                             "el => el.tagName === 'INPUT' "
-                            "|| el.tagName === 'TEXTAREA' "
-                            "|| el.isContentEditable"
+                            "|| el.tagName === 'TEXTAREA'",
                         )
                     except Exception:
                         is_input_like = False
                     if is_input_like:
+                        # ALWAYS run keyboard rescue for INPUT typeaheads.
+                        # The "verify then fallback" pattern doesn't work
+                        # because canonical-setter temporarily sets value
+                        # → verify reads non-empty → skips rescue → React
+                        # later resets → field stays empty. Just always
+                        # do the keyboard pattern; for cases where the
+                        # click already worked, this is a redundant ~2s
+                        # re-fill that lands on the same value.
+                        digits = re.sub(r"\D", "", value)
+                        if digits:
+                            prefix = digits[:4]
+                        else:
+                            last_word = re.split(r"[\s,]+", value.strip())[-1]
+                            prefix = last_word[:8] if last_word else value[:5]
                         try:
-                            await trigger.evaluate(
-                                r"""(el, val) => {
-                                    const ctor = el.tagName === 'TEXTAREA'
-                                        ? window.HTMLTextAreaElement
-                                        : window.HTMLInputElement;
-                                    const desc = ctor && Object.getOwnPropertyDescriptor(
-                                        ctor.prototype, 'value');
-                                    if (desc && desc.set) desc.set.call(el, val);
-                                    else el.value = val;
-                                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                                    el.dispatchEvent(new Event('change', {bubbles: true}));
-                                }""",
-                                value,
-                            )
+                            # Close any leftover dropdown before re-opening
+                            await page.keyboard.press("Escape")
+                            await asyncio.sleep(0.2)
+                            await trigger.click(timeout=1500)
+                            await trigger.press("Control+A")
+                            await trigger.press("Delete")
+                            await trigger.press_sequentially(prefix, delay=60)
+                            await asyncio.sleep(0.6)
+                            await trigger.press("Enter")
+                            await asyncio.sleep(0.4)
                             logger.info(
-                                "select_combobox: {} → {!r} ✓ + canonical-setter commit",
+                                "select_combobox: {} → {!r} ✓ + type+Enter commit",
                                 sel, value,
                             )
                         except Exception as e:
-                            logger.warning("canonical-setter commit failed: {}", e)
+                            logger.debug("type+Enter commit failed: {}", e)
 
                 # Not in the (possibly virtual-scrolled) listbox view —
                 # filter by typing. Use press_sequentially (real char-by-char
