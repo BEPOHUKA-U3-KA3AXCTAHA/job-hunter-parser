@@ -1,0 +1,49 @@
+[importlinter]
+root_packages =
+    app
+include_external_packages = True
+
+# Rule 1 — application layer doesn't import infra.
+# services/, models/, ports/ inside any module may NOT touch app.infra.* OR
+# any third-party persistence/HTTP/automation library. Adapters and
+# entrypoints are the only legal homes.
+#
+# Add ONE line per new module's `services` / `models` / `ports` package
+# under source_modules. Convention: `app.modules.<name>.{services,models,ports}`.
+[importlinter:contract:1-services-no-infra]
+name = Rule 1 — services/models/ports do not import infra
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    app.modules.example.services
+    app.modules.example.models
+    app.modules.example.ports
+forbidden_modules =
+    app.infra
+    sqlalchemy
+    asyncpg
+    psycopg
+    psycopg2
+    httpx
+    requests
+    aiohttp
+    playwright
+    selenium
+    boto3
+    boto
+
+# Rule 4 — cross-module imports go through __init__.py only.
+# Enforced by scripts/lint_arch.py (raw-source AST check). import-linter's
+# graph analysis can't distinguish a direct `from app.modules.B.adapters
+# import X` from a transitive load through B's own __init__.py, so this
+# rule is checked at the source-statement level.
+
+# Rule 5 — infra/ never imports from modules/ or entrypoints/.
+[importlinter:contract:5-infra-no-uplift]
+name = Rule 5 — infra does not import from modules or entrypoints
+type = forbidden
+source_modules =
+    app.infra
+forbidden_modules =
+    app.modules
+    app.entrypoints

@@ -1,0 +1,44 @@
+# Run before every commit. Wire to git hooks once with `pre-commit install`.
+# Architecture rules referenced here are documented in
+# memory/feedback_arch_rules.md.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      # Rule 2 + rule 8 — PEP/style/sort + max-args via PLR0913.
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      # Rule 2 — strict types on the `app/` package.
+      - id: mypy
+        files: ^app/
+        additional_dependencies:
+          - sqlalchemy[asyncio]>=2.0
+          - pydantic>=2.9
+          - pydantic-settings>=2.5
+          - typer>=0.15
+          - loguru>=0.7
+
+  - repo: local
+    hooks:
+      # Rules 1 + 4 + 5 — layered import contracts.
+      - id: import-linter
+        name: import-linter (rules 1, 4, 5)
+        entry: .venv/bin/lint-imports
+        args: ["--config", ".importlinter"]
+        language: system
+        pass_filenames: false
+        files: ^(app/|\.importlinter$)
+
+      # Rules 3 + 6 + 7 — adapter folder = port name; ORM tables only in
+      # infra/db/tables/; sessions/commits only in *_uow adapters.
+      - id: lint-arch
+        name: lint_arch (rules 3, 6, 7)
+        entry: .venv/bin/python scripts/lint_arch.py
+        language: system
+        pass_filenames: false
+        files: ^app/

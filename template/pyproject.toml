@@ -1,0 +1,76 @@
+[project]
+name = "your-project-name"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "Modular monolith — hexagonal architecture + Cosmic Python UoW. Replace this."
+dependencies = [
+    # Runtime deps — keep minimal. Add yours.
+    "loguru>=0.7",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    # Persistence (optional — drop if your project has no DB)
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",   # swap for asyncpg in production
+    "alembic>=1.13",
+    # Web / CLI entrypoints (drop the ones you don't need)
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "typer>=0.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "import-linter>=2.0",
+    "pre-commit>=3.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",   # pycodestyle + pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "B",             # bugbear
+    "C4",            # comprehensions
+    "UP",            # pyupgrade
+    "ARG",           # unused args
+    "SIM",           # simplify
+    "TCH",           # type-checking
+    "RUF",           # ruff-specific
+    "PLR0913",       # rule 8 — too many arguments
+]
+ignore = [
+    "E501",          # line length — handled by ruff-format
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "PLR0913"]
+# DTO/dataclass models have many fields by design.
+"app/modules/*/models/*.py" = ["PLR0913"]
+# Typer CLI commands and FastAPI route handlers — argument count is the UX.
+"app/entrypoints/cli/*.py" = ["PLR0913"]
+"app/entrypoints/api/*.py" = ["PLR0913"]
+
+[tool.ruff.lint.pylint]
+max-args = 3   # rule 8 — bundle 4+ params into a DTO/dataclass
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+files = ["app"]
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
