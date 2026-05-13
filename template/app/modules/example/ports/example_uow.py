@@ -8,11 +8,13 @@ The UoW holds repositories as attributes and owns the session
 lifecycle. Services type-hint against THIS Protocol, not the concrete
 SqlaExampleUoW — keeps the application layer infra-blind.
 """
+
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from app.modules.example.ports.item_journal import ItemJournalRepository
+if TYPE_CHECKING:
+    from app.modules.example.ports.item_journal import ItemJournalRepository
 
 
 @runtime_checkable

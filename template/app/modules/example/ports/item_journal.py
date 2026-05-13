@@ -9,11 +9,13 @@ The adapter folder MUST match this file's stem:
     ports/item_journal.py  ↔  adapters/item_journal/<impl>.py
 Enforced by scripts/lint_arch.py rule 3.
 """
+
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from app.modules.example.models.item import Item
+if TYPE_CHECKING:
+    from app.modules.example.models.item import Item
 
 
 @runtime_checkable

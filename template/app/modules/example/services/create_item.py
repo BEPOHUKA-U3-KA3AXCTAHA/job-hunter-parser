@@ -6,12 +6,16 @@ Note this file:
   - explicitly awaits `uow.commit()` (default on exit = rollback)
   - has ≤3 args per the rule-8 budget
 """
+
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from app.modules.example.models.item import Item
-from app.modules.example.ports.example_uow import ExampleUoW
+if TYPE_CHECKING:
+    from app.modules.example.models.item import Item
+    from app.modules.example.ports.example_uow import ExampleUoW
 
 
 async def create_item(uow: ExampleUoW, name: str) -> Item:

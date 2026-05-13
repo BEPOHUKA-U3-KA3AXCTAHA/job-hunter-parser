@@ -8,12 +8,17 @@ This adapter:
 To wire a real table, define `ItemRow` in
 `app/infra/db/tables/item.py` and replace the stub queries below.
 """
+
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import TYPE_CHECKING
 
-from app.modules.example.models.item import Item
 from app.modules.example.ports.item_journal import ItemJournalRepository
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.modules.example.models.item import Item
 
 
 class SqlaItemJournalRepository(ItemJournalRepository):

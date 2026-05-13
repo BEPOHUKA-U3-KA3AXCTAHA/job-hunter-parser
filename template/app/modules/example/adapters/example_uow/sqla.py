@@ -8,13 +8,17 @@ Default behavior on `__aexit__` is ROLLBACK. Calling code must
 explicitly `await uow.commit()` to persist. This protects against
 "oops I returned early and the changes I made got committed anyway".
 """
+
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import TYPE_CHECKING
 
 from app.infra.db import get_session_maker
 from app.modules.example.adapters.item_journal.sqla import SqlaItemJournalRepository
 from app.modules.example.ports.example_uow import ExampleUoW
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class SqlaExampleUoW(ExampleUoW):

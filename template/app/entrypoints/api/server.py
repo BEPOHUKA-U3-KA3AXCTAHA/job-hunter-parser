@@ -1,7 +1,8 @@
 """FastAPI entrypoint. Delete or extend.
 
-    uvicorn app.entrypoints.api.server:app --reload
+uvicorn app.entrypoints.api.server:app --reload
 """
+
 from __future__ import annotations
 
 from fastapi import FastAPI

@@ -16,6 +16,7 @@ Drop the bits you don't need.
 ```
 template/
 ├── README.md                 ← you are here
+├── CLAUDE.md                 ← onboarding for AI agents (read first if you're an LLM)
 ├── ARCHITECTURE.md           ← deep dive on the 8 rules
 ├── pyproject.toml            ← ruff + mypy + pytest config
 ├── .importlinter             ← rules 1, 5
@@ -80,6 +81,12 @@ mv app/modules/example app/modules/billing  # or whatever
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the long version of each rule —
 why it exists, what it catches, when to opt out.
+
+If you're an AI agent (Claude / Cursor / etc.) starting work on a project
+built from this template, read [CLAUDE.md](CLAUDE.md) first. It's the
+short, action-oriented version: what the rules mean in practice, "I want
+to add X" recipes, and the check-loop you must run before declaring a
+task done.
 
 ## Why each rule
 

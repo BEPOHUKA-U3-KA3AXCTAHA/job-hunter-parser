@@ -22,6 +22,7 @@ External code imports the module's public symbols VIA __init__ ONLY.
 Reaching into `app.modules.example.adapters.X` from outside is a
 rule-4 violation (caught by scripts/lint_arch.py).
 """
+
 from app.modules.example.models.item import Item
 from app.modules.example.ports.example_uow import ExampleUoW
 from app.modules.example.ports.item_journal import ItemJournalRepository
@@ -36,12 +37,13 @@ def default_uow() -> ExampleUoW:
     SQLAlchemy into its dependency graph until it actually needs a UoW.
     """
     from app.modules.example.adapters.example_uow.sqla import SqlaExampleUoW
+
     return SqlaExampleUoW()
 
 
 __all__ = [
-    "Item",
     "ExampleUoW",
+    "Item",
     "ItemJournalRepository",
     "create_item",
     "default_uow",

@@ -1,4 +1,5 @@
 """Domain entity. Pure Python — no SQLA imports allowed (rule 1)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

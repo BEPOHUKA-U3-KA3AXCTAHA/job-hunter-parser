@@ -7,13 +7,16 @@ Config via `DATABASE_URL` env var:
     - empty/unset → `sqlite+aiosqlite:///app.db`
     - production: `postgresql+asyncpg://user:pw@host/dbname`
 """
+
 from __future__ import annotations
 
 import os
 from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine, async_sessionmaker, create_async_engine,
+    AsyncEngine,
+    async_sessionmaker,
+    create_async_engine,
 )
 
 

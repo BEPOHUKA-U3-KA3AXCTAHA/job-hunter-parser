@@ -9,7 +9,9 @@ Convention: one file per domain entity, all subclassing the shared
 `Base`. Re-export them here so Alembic's env.py discovers them via
 a single import.
 """
+
 from app.infra.db.tables.base import Base
+
 # Re-export your tables here so Alembic discovers them, e.g.:
 # from app.infra.db.tables.item import ItemRow
 #

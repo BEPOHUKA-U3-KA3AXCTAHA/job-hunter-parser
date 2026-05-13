@@ -16,10 +16,10 @@ Rules:
 Usage: .venv/bin/python scripts/lint_arch.py
 Exits non-zero on any violation; pre-commit hook fails the commit.
 """
+
 from __future__ import annotations
 
 import ast
-import os
 import re
 import sys
 from pathlib import Path
@@ -37,6 +37,7 @@ def err(path: Path, msg: str) -> None:
 
 
 # ---------- Rule 3: adapter folder = port name ----------
+
 
 def check_rule_3() -> None:
     """Adapter folder name == port file stem, AND every class defined in
@@ -62,9 +63,7 @@ def check_rule_3() -> None:
                 tree = ast.parse(p.read_text())
             except SyntaxError:
                 continue
-            port_files[p.stem] = {
-                node.name for node in tree.body if isinstance(node, ast.ClassDef)
-            }
+            port_files[p.stem] = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
         port_stems = set(port_files)
 
         for adapter_subdir in adapters.iterdir():
@@ -137,6 +136,7 @@ def check_rule_3() -> None:
 
 # ---------- Rule 6: ORM tables only in infra/db/tables/ ----------
 
+
 def check_rule_6() -> None:
     """Find any `__tablename__` assignment or `Base` subclass outside
     app/infra/db/tables/."""
@@ -153,15 +153,19 @@ def check_rule_6() -> None:
             if isinstance(node, ast.Assign):
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name) and tgt.id == "__tablename__":
-                        err(py, f"Rule 6: __tablename__ assignment outside infra/db/tables/")
+                        err(py, "Rule 6: __tablename__ assignment outside infra/db/tables/")
             if isinstance(node, ast.ClassDef):
                 for base in node.bases:
                     name = (
-                        base.id if isinstance(base, ast.Name)
+                        base.id
+                        if isinstance(base, ast.Name)
                         else (base.attr if isinstance(base, ast.Attribute) else None)
                     )
                     if name == "Base":
-                        err(py, f"Rule 6: class {node.name} subclasses Base outside infra/db/tables/")
+                        err(
+                            py,
+                            f"Rule 6: class {node.name} subclasses Base outside infra/db/tables/",
+                        )
 
 
 # ---------- Rule 7: sessions/commits ONLY in *_uow adapters ----------
@@ -186,6 +190,7 @@ SESSION_PATTERNS = [
     re.compile(r"async with Session\(\)"),
     re.compile(r"\bAsyncSession\(\s*[a-zA-Z_]"),  # AsyncSession(engine, ...) — direct construction
 ]
+
 
 # Adapter folders that are UoW: stem ends in `_uow`.
 def _is_uow_file(path: Path) -> bool:
@@ -213,7 +218,7 @@ def check_rule_4() -> None:
     `app/entrypoints/` is a composition root and is allowed to import
     concrete adapters by name (per the README's wiring convention).
     """
-    PRIVATE_SUBPACKAGES = {"adapters", "services", "models", "ports"}
+    private_subpackages = {"adapters", "services", "models", "ports"}
     for py in APP.rglob("*.py"):
         if "__pycache__" in py.parts:
             continue
@@ -230,8 +235,10 @@ def check_rule_4() -> None:
             continue
         for node in ast.walk(tree):
             mod = (
-                node.module if isinstance(node, ast.ImportFrom)
-                else node.names[0].name if isinstance(node, ast.Import)
+                node.module
+                if isinstance(node, ast.ImportFrom)
+                else node.names[0].name
+                if isinstance(node, ast.Import)
                 else None
             )
             if not mod or not mod.startswith("app.modules."):
@@ -241,7 +248,7 @@ def check_rule_4() -> None:
                 continue  # `app.modules.<name>` — public package, fine
             target_module = parts[2]
             target_sub = parts[3]
-            if target_sub not in PRIVATE_SUBPACKAGES:
+            if target_sub not in private_subpackages:
                 continue
             if target_module == own_module:
                 continue  # in-module import — fine
@@ -275,6 +282,7 @@ def check_rule_7() -> None:
 
 
 # ---------- main ----------
+
 
 def main() -> int:
     check_rule_3()
